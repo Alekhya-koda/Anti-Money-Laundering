@@ -12,7 +12,6 @@ aml_project/
   silver/transactions.parquet        <- cleaned transactions (one row per txn)
   gold/account_features.parquet      <- v1 account features (EDA only, do NOT model on this)
   gold_v2/gold_v2.parquet            <- shared modelling table (USE THIS)
-  baselines.csv                      <- v1 baselines (full period, mixed currencies)
   baselines_v2.csv                   <- v2 baselines (test snapshot): the benchmark to beat
 ```
 The folder is **view-only**. Add it to your Drive via right-click > Organize > Add shortcut to Drive, then save your own work in your **own** folder.
