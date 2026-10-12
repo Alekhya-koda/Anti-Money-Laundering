@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AML Alert System - Final Report (Group 9)</title>
+<style>
+  @page { size: A4; margin: 14mm 15mm 15mm 15mm;
+          @bottom-right { content: counter(page) " / " counter(pages); font-family: Arial, sans-serif; font-size: 10pt; color: #6b7385; } }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 10pt; line-height: 1.3; color: #1b1b1b; margin: 0; }
+  h1 { font-size: 17pt; margin: 0 0 2pt; color: #1d2b45; }
+  .sub { color: #45526b; margin: 0 0 1pt; }
+  h2 { font-size: 12pt; color: #1d2b45; margin: 9pt 0 3pt; padding-bottom: 2pt; border-bottom: 1px solid #d8d4c8; break-after: avoid; }
+  h3 { font-size: 10pt; margin: 5pt 0 2pt; color: #1d2b45; break-after: avoid; }
+  p { margin: 0 0 5pt; }
+  ul { margin: 0 0 5pt; padding-left: 14pt; }
+  li { margin: 0 0 2pt; }
+  table { border-collapse: collapse; width: 100%; margin: 2pt 0 7pt; font-size: 10pt; break-inside: avoid; }
+  th, td { border-top: 1px solid #d8d4c8; border-bottom: 1px solid #d8d4c8; padding: 2pt 5pt; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; color: #1d2b45; font-weight: bold; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  tr.hl td { background: #fdf1e6; }
+  .cap { color: #45526b; margin: 1pt 0 2pt; break-after: avoid; }
+  .figcap { color: #45526b; margin: 2pt 0 7pt; }
+  figure { margin: 3pt 0 0; break-inside: avoid; }
+  img { display: block; max-width: 100%; }
+  .two { display: flex; gap: 12pt; align-items: flex-start; break-inside: avoid; }
+  .two > div { flex: 1; }
+  .box { background: #f6f4ef; border-left: 3px solid #d9782d; padding: 4pt 7pt; margin: 3pt 0 7pt; }
+  .mono { color: #1d2b45; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>AML Alert System: Ranking Suspicious Bank Accounts</h1>
+<p class="sub">CS611 Machine Learning Engineering · Group 9 · Final Report</p>
+<p class="sub">Zhou Jie, Ho Wee Loong, Joyce Teo Hua Sze, Abinav Shajil, Alekhya Kodavatiganti, Zachary Artemus Kondas</p>
+<p class="sub">Code and README: github.com/Alekhya-koda/Anti-Money-Laundering (zip on eLearn). Run: <span class="mono">docker compose up -d --build</span>, then switch on the DAG.</p>
+
+<h2>1. Problem, users and success criteria</h2>
+<p>Banks in Singapore must monitor customer transactions and report suspicious activity (MAS Notice 626). Most monitoring is still rule based. On our data the rule "flag any payment above 10,000" raises 1.37M alerts at 0.18% precision, barely better than picking at random. Investigators can only open a fixed number of cases a day, so what helps them is a short list ordered by risk, with the reason each account is on it. MAS's FEAT principles also expect AI-assisted decisions to be explainable and accountable.</p>
+<p>We built a system that every morning ranks all active accounts by how likely they are to send a laundering payment in the next two days, and hands the top 500 to the investigators with three plain-English reasons each. The same model answers one-off questions through a real-time API.</p>
+<p class="cap"><b>Table 1.</b> Users of the system</p>
+<table>
+  <tr><th style="width:22%">User</th><th style="width:40%">Need</th><th>What they use</th></tr>
+  <tr><td>AML investigator (primary)</td><td>See the riskiest accounts first, check one account on demand</td><td>Morning alert list (CSV or GET /alerts), GET /accounts/{acct}</td></tr>
+  <tr><td>Compliance manager</td><td>Know if alerts are worth the time, plan workload</td><td>Daily precision and alert volume (model_performance.csv)</td></tr>
+  <tr><td>ML engineer</td><td>Keep the pipeline healthy, approve and roll back models</td><td>Airflow UI, MLflow registry, drift reports</td></tr>
+</table>
+<p><b>Success criteria.</b> We rank accounts, not transactions, because investigators open cases per account. With 0.2% positives accuracy says nothing, so we report Precision@K and Recall@K for K = 500 (the daily review capacity we assume), 2,000 and 5,000, plus PR-AUC, and compare against simple rule rankings of the same accounts.</p>
+
+<h2>2. Data and assumptions</h2>
+<p>We use IBM's synthetic AML transactions (Altman et al., NeurIPS 2023), HI-Small variant: 5.08M transactions between about 515k accounts from Sep 1 to 18, 2022, in 15 currencies, with 0.10% of transactions labelled as laundering. The laundering comes from 370 simulated attempts of eight patterns (fan-in, fan-out, cycle, gather-scatter, scatter-gather, bipartite, stack, random). Real bank data is private and rarely labelled, which is why we use a simulator. The proposal named the HI-Large file (180M rows); we moved to HI-Small so the whole pipeline, including a 10-day replay, runs on one laptop. The schema is the same, so the Spark jobs would run unchanged on HI-Large on a cluster.</p>
+<p>EDA findings that shaped the design:</p>
+<ul>
+  <li><b>Time trap.</b> After Sep 10 normal volume falls from about 480k to a few hundred transactions a day while laundering chains continue (59% of the tail is illicit). Keeping the tail makes the task look easy, so we only use Sep 1-10.</li>
+  <li><b>Alert universe.</b> Self-transfers and cross-currency payments are almost never laundering, so they are left out of features and labels.</li>
+  <li><b>Amounts.</b> Raw amounts cannot be compared across currencies; we use the percentile of each amount within its currency.</li>
+  <li><b>Payment format.</b> ACH carries 87% of laundering transactions, a quirk of the simulator that a model can exploit.</li>
+  <li><b>Weekly cycle.</b> Weekend days have about 207k transactions against 480k on weekdays. This comes back later as drift.</li>
+</ul>
+<p><b>Assumptions.</b> (1) The core banking system delivers one transaction file per day and scoring runs after midnight. (2) The label of an account is whether it sends at least one laundering payment in the next two days. It stands in for an investigation outcome and, like one, arrives late: the label of the snapshot taken on day D is known only after day D+1. (3) Investigators review 500 accounts a day. (4) Account IDs are unique across banks.</p>
+
+<h2>3. System architecture</h2>
+<figure>
+  <img src="figures/architecture.svg" alt="Architecture: daily Airflow DAG from the transaction file through bronze, silver, feature, graph and label stores to training, batch inference and monitoring, with MLflow as registry and a FastAPI service sharing the feature store and champion model" style="width:100%">
+  <p class="figcap"><b>Figure 1.</b> Architecture. Batch and real-time inference share the feature store and the champion alias in MLflow.</p>
+</figure>
+<p>Everything starts with <span class="mono">docker compose up</span> (Table 2): Airflow 2.6 (our image extends the lab 5 image with Java 17, PySpark 3.5 and LightGBM), an MLflow 2.17 server with a SQLite backend and an artifact store on a volume, and a separate, small FastAPI container. Data sits in a parquet datamart with bronze, silver and gold layers. Each piece has a managed AWS equivalent; we designed for that move but did not deploy to AWS.</p>
+<p class="cap"><b>Table 2.</b> Components, local and on AWS</p>
+<table>
+  <tr><th style="width:24%">Component</th><th style="width:42%">Local (Docker Compose)</th><th>AWS</th></tr>
+  <tr><td>Orchestration</td><td>Airflow scheduler + webserver</td><td>Amazon MWAA</td></tr>
+  <tr><td>Processing</td><td>PySpark (local mode), pandas + networkx</td><td>Amazon EMR</td></tr>
+  <tr><td>Storage</td><td>Parquet datamart on a volume</td><td>Amazon S3</td></tr>
+  <tr><td>Tracking and registry</td><td>MLflow server + SQLite</td><td>MLflow on ECS + RDS</td></tr>
+  <tr><td>Real-time API</td><td>FastAPI container</td><td>ECS service behind a load balancer, autoscaled</td></tr>
+  <tr><td>CI</td><td>GitHub Actions</td><td>GitHub Actions</td></tr>
+</table>
+<p><b>Daily pipeline.</b> One DAG run processes one day of transactions (Airflow's <span class="mono">ds</span>). Bronze and silver ingest day ds. Features look back and labels look forward, so the gold jobs work on different snapshots: features for the next morning (ds+1), and labels for the snapshot taken the morning before (ds-1), whose two-day label window has just closed. Training runs only when needed (Section 6), then batch inference scores the ds+1 snapshot and the monitor checks it. We replay Sep 1-10 as production with Airflow's catchup: the ten runs take 12 minutes on a laptop; a normal day takes about one minute, a training day three.</p>
+<p><b>How batch and online fit together.</b> The two deployment modes share two things: the feature store and the champion alias in the MLflow registry. The API does not compute features; it looks the account up in the latest feature snapshot and scores it with the same model version as the batch job, so the API and the morning list always agree (we checked: 0.4467 for the top account in both). The price is freshness: an API score reflects activity up to midnight. Scoring a payment the moment it happens would need a streaming feature pipeline, which is out of scope.</p>
+
+<h2>4. Features and labels</h2>
+<p class="cap"><b>Table 3.</b> Snapshots used for model development. The label windows do not overlap.</p>
+<table>
+  <tr><th>Snapshot</th><th>Features from</th><th>Labels from</th><th class="n">Accounts</th><th class="n">Positives</th><th>Use</th></tr>
+  <tr><td>2022-09-05</td><td>Sep 1-4</td><td>Sep 5-6</td><td class="n">399,678</td><td class="n">639 (0.16%)</td><td>train</td></tr>
+  <tr><td>2022-09-07</td><td>Sep 3-6</td><td>Sep 7-8</td><td class="n">252,878</td><td class="n">565 (0.22%)</td><td>validation (tuning, selection)</td></tr>
+  <tr><td>2022-09-09</td><td>Sep 5-8</td><td>Sep 9-10</td><td class="n">252,987</td><td class="n">534 (0.21%)</td><td>test, evaluated once by the monitor</td></tr>
+</table>
+<p><b>Feature store</b> (PySpark, 24 features per account and snapshot, from the four days before the snapshot): outgoing activity (payments, distinct receivers and banks, amount percentiles, top-1% amounts, shares of cross-bank, ACH, cash and bitcoin, payments in the last 24 hours, active days), incoming activity (the same for senders), structure (share sent to the top counterparty, reciprocal pairs, fan-out minus fan-in, out/in ratio) and timing (hours active, hours since the last payment).</p>
+<p><b>Graph features</b> (networkx, 6 features). On the same four days we build the payment graph (about 400k accounts and 530k sender-receiver edges, under 10 seconds) and compute PageRank, the size of the account's strongly connected component (above 1 means the account sits inside a payment loop), and two-hop fan-out and fan-in (how many accounts my receivers pay on, how many paid my senders). Peers at the RFC suggested using relationships between accounts; we keep these as a separate feature group so their value can be measured.</p>
+<p><b>Leakage controls.</b> Features only use transactions before the snapshot; amount percentiles are computed inside the four-day window (the EDA version used all ten days and so leaked future amounts); the label windows of train, validation and test do not overlap; no feature uses the laundering flag.</p>
+<p><b>Data quality.</b> Silver enforces types, drops exact duplicates (9 rows) and unparsable rows, and writes a daily report (rows in and out, laundering rows, currencies) that the monitor reads. As a check, we compared the Spark feature store with the DuckDB prototype from the EDA on the training snapshot: all 30 features and all 639 labels were identical.</p>
+
+<h2>5. Model development</h2>
+<p><b>Candidates.</b> We compare three models: logistic regression (arcsinh transform and scaling, 24 features), LightGBM on the same 24 features, and LightGBM with the 6 graph features added. LR is the transparent baseline peers asked about. LightGBM replaces the XGBoost of the proposal: both are gradient-boosted trees, but LightGBM trained faster with early stopping on our data and gives exact SHAP values natively, so the serving image does not need the shap package. We did not try graph neural networks or sequence models: with about 600 positives per snapshot they would overfit, they need GPUs and they are harder to explain to an investigator.</p>
+<p><b>Training job.</b> <span class="mono">model_train.py</span> loads the train and validation snapshots from the feature and label stores. LR is tuned over a small grid (C, class weight). Each LightGBM is tuned with a 20-try random search over leaves, minimum leaf size, learning rate, column sampling, L2 and scale_pos_weight, every try with early stopping on validation PR-AUC. All three models are logged to MLflow (parameters, train and validation metrics, the table of all tuning tries) and registered as new versions of the model <span class="mono">aml-account-risk</span>. Training takes about two minutes on a laptop CPU, so a GPU or distributed training was not needed.</p>
+<div class="two">
+  <div>
+    <p><b>Class imbalance.</b> Peers asked how we handle the 0.2% positive rate. We tested the usual fix, weighting the positive class, inside the search, and it hurt (Figure 2): LightGBM's median validation PR-AUC was 0.054 without weights and 0.005 with scale_pos_weight 10 or 100; LR dropped from 0.042 to 0.018 with balanced weights. Up-weighting 639 positives makes the trees memorise them. Ranking metrics do not depend on the class ratio, so the final models keep the natural balance and we deal with imbalance in the evaluation (P@K, PR-AUC).</p>
+    <p class="cap"><b>Table 4.</b> Validation snapshot (2022-09-07)</p>
+    <table>
+      <tr><th>Model</th><th class="n">PR-AUC</th><th class="n">P@500</th><th class="n">R@5000</th></tr>
+      <tr><td>Logistic regression</td><td class="n">0.042</td><td class="n">5.8%</td><td class="n">12.0%</td></tr>
+      <tr><td>LightGBM</td><td class="n">0.065</td><td class="n">9.4%</td><td class="n">13.1%</td></tr>
+      <tr><td>LightGBM + graph</td><td class="n">0.067</td><td class="n">10.4%</td><td class="n">14.2%</td></tr>
+    </table>
+  </div>
+  <div style="flex:0 0 46%">
+    <figure>
+      <img src="figures/class_weights.png" alt="Validation PR-AUC of the LightGBM tuning tries by scale_pos_weight: tries without class weights reach about 0.05 to 0.07, tries with weight 10 or 100 mostly stay below 0.01">
+      <p class="figcap"><b>Figure 2.</b> Class weights made the ranking worse in every setting we tried.</p>
+    </figure>
+  </div>
+</div>
+<p><b>Selection rule.</b> The champion is the simplest model within 10% of the best validation PR-AUC. The graph model was only 3% better on validation, well inside the noise of 565 positives, and it costs an extra daily job, so plain LightGBM became champion (version 2). The graph model became challenger (v3) and LR the baseline (v1); both run in shadow mode.</p>
+<p><b>Explainability.</b> Peers asked why we use SHAP. Investigators need reasons for one specific account, not a global importance chart, and the reasons must reflect what the model actually did. TreeSHAP values give exactly that: one value per feature and account, adding up to the score, computed exactly by LightGBM. The batch job and the API share one function that turns the three largest positive contributions into sentences such as "money goes both ways with 3 accounts" or "100% of sent payments are ACH". For LR the contribution is the coefficient times the scaled value.</p>
+
+<h2>6. Deployment</h2>
+<p><b>Batch inference</b> (<span class="mono">model_inference.py</span>, daily). It loads every model that has an alias, scores all accounts of the snapshot (about 250k in a few seconds) and saves every score with its model version to the inference store. The champion's top 500 accounts, with three reasons each, become the morning alert list. Challenger and baseline scores are stored but never shown to investigators: this is our shadow deployment.</p>
+<p class="cap"><b>Table 5.</b> Top of the morning alert list for Sep 9 (champion v2). All three turned out to be laundering accounts.</p>
+<table>
+  <tr><th class="n" style="width:6%">Rank</th><th style="width:14%">Account</th><th class="n" style="width:8%">Score</th><th>Reasons (top 3 SHAP contributions)</th></tr>
+  <tr><td class="n">1</td><td>811D80C30</td><td class="n">0.447</td><td>100% of sent payments are ACH; money goes both ways with 3 accounts; last payment 4 hours ago</td></tr>
+  <tr><td class="n">2</td><td>80C6F48A0</td><td class="n">0.336</td><td>100% of sent payments are ACH; received money from 8 different banks; last payment 0 hours ago</td></tr>
+  <tr><td class="n">3</td><td>8010D4440</td><td class="n">0.255</td><td>100% of sent payments are ACH; last payment 1 hour ago; received money from 9 different banks</td></tr>
+</table>
+<p><b>Real-time inference</b> (<span class="mono">api/app.py</span>, FastAPI, Table 6). The first request for a snapshot scores and caches it (about 0.2 seconds); later requests take about 5 ms locally. The cache is the only state, so the service can scale out behind a load balancer.</p>
+<p class="cap"><b>Table 6.</b> API endpoints</p>
+<table>
+  <tr><th style="width:30%">Endpoint</th><th>Purpose</th></tr>
+  <tr><td>GET /accounts/{acct}</td><td>Score, risk percentile, rank in today's alert list and three reasons for one account</td></tr>
+  <tr><td>POST /predict</td><td>Score a feature vector sent by another system (unknown features are rejected)</td></tr>
+  <tr><td>GET /alerts</td><td>The morning alert list, for a case management tool or dashboard</td></tr>
+  <tr><td>POST /reload, GET /health</td><td>Pick up a newly promoted champion without a restart; liveness check</td></tr>
+</table>
+<p><b>Registry and release.</b> One registered model in MLflow with three aliases replaces file names: champion (production), challenger and baseline (shadow). A retrained model only ever becomes challenger. Promotion is a human decision: an ML engineer moves the champion alias in the MLflow UI after reviewing the shadow results and calls POST /reload; the next batch run picks the new champion up by itself. This works like a blue/green switch, and rollback is moving the alias back. We tested the switch end to end (v2 to v3 and back) without restarting any container.</p>
+<p><b>Retraining policy.</b> The training task runs every day but only trains when there is no champion yet, when the champion is a week old, or when the monitor raised a drift flag and no newer challenger is already waiting for approval.</p>
+<p><b>CI.</b> GitHub Actions compiles every job and the DAG and runs 10 unit tests on each push and pull request (metrics, including the tie bug in Section 8, PSI, reason codes, and the API with a stub model).</p>
+
+<h2>7. Monitoring</h2>
+<p>The monitor runs after every batch inference and checks five things:</p>
+<ul>
+  <li><b>Model quality.</b> Once a snapshot's labels arrive, two days later, P@K, R@K and PR-AUC for every alias and two rule baselines, appended to model_performance.csv.</li>
+  <li><b>Data drift.</b> PSI of every champion feature, today's snapshot against the champion's training snapshot (0.1 watch, 0.25 drift).</li>
+  <li><b>Prediction drift.</b> PSI of the champion's score distribution.</li>
+  <li><b>Feature attribution drift.</b> Each feature's share of mean |SHAP|, today against training.</li>
+  <li><b>Data quality.</b> The silver report of the last ingested day (rows, removed rows).</li>
+</ul>
+<p>A drift flag is raised when the score or one of the champion's ten most important features passes 0.25.</p>
+<figure>
+  <img src="figures/attribution_and_drift.png" alt="Left: share of mean absolute SHAP of the champion's top 10 features, led by in_amt_pct_avg at 34% and hours_since_last_txn at 16%. Right: PSI of the same features on the test snapshot, with hours_since_last_txn at 1.87, active_span_hours at 1.24 and out_in_cnt_ratio at 0.27 above the 0.25 drift line" style="width:94%">
+  <p class="figcap"><b>Figure 3.</b> Champion attribution on the training snapshot and drift on the first production snapshot (Sep 9).</p>
+</figure>
+<p><b>What happened in the replay.</b> On the first production snapshot the monitor found strong drift (Figure 3): hours_since_last_txn (PSI 1.87), active_span_hours (1.24) and the score itself (1.17). The cause is the calendar: the training window (Thursday to Sunday) contains a weekend and the test window (Monday to Thursday) does not, so recency and activity features shift. The flag triggered a retrain the next night (train Sep 6, validation Sep 8); the new LightGBM (v5, validation PR-AUC 0.073) became challenger, and the monitor stopped raising flags while it waits for approval. The attribution view also shows that the model relies most on how large the received amounts are (34% of |SHAP|) and on recency (16%); ACH share is only 5%, less than the EDA made us fear.</p>
+<p><b>Bias drift.</b> The data has no customer attributes (age, gender, nationality), so fairness across protected groups cannot be tested. In production we would add alert rate and precision by customer segment and by bank to the same monitor.</p>
+
+<h2>8. Results on the test snapshot</h2>
+<p class="cap"><b>Table 7.</b> Test snapshot 2022-09-09: 534 positives among 252,987 accounts. Brackets: 95% bootstrap interval over accounts.</p>
+<table>
+  <tr><th>Model</th><th>Role</th><th class="n">PR-AUC</th><th class="n">P@500</th><th class="n">R@500</th><th class="n">P@2000</th><th class="n">R@2000</th><th class="n">R@5000</th></tr>
+  <tr><td>Rule: out_cnt</td><td>-</td><td class="n">0.030 [0.017-0.047]</td><td class="n">4.2% [2.4-5.8]</td><td class="n">3.9%</td><td class="n">1.7%</td><td class="n">6.2%</td><td class="n">7.9%</td></tr>
+  <tr><td>Rule: out_big_cnt</td><td>-</td><td class="n">0.027 [0.014-0.042]</td><td class="n">3.2% [1.6-5.0]</td><td class="n">3.0%</td><td class="n">1.0%</td><td class="n">3.7%</td><td class="n">5.6%</td></tr>
+  <tr><td>Logistic regression</td><td>baseline v1</td><td class="n">0.042 [0.025-0.063]</td><td class="n">5.0% [3.0-7.2]</td><td class="n">4.7%</td><td class="n">2.7%</td><td class="n">10.1%</td><td class="n">13.3%</td></tr>
+  <tr class="hl"><td>LightGBM</td><td>champion v2</td><td class="n">0.068 [0.044-0.092]</td><td class="n">9.4% [6.8-12.6]</td><td class="n">8.8%</td><td class="n">4.0%</td><td class="n">15.0%</td><td class="n">20.2%</td></tr>
+  <tr><td>LightGBM + graph</td><td>challenger v3</td><td class="n">0.081 [0.057-0.111]</td><td class="n">13.8% [10.2-17.4]</td><td class="n">12.9%</td><td class="n">4.6%</td><td class="n">17.0%</td><td class="n">21.7%</td></tr>
+</table>
+<figure>
+  <img src="figures/precision_at_k.png" alt="Precision at K from 100 to 5000 on the test snapshot. At K = 500: LightGBM plus graph 13.8%, LightGBM 9.4%, logistic regression 5.0%, rule 4.2%, random 0.21%" style="width:84%">
+  <p class="figcap"><b>Figure 4.</b> Precision of the top-K list on the test snapshot. K = 500 is the assumed daily capacity.</p>
+</figure>
+<p>The champion's morning list of 500 accounts held 47 laundering accounts: 2.2 times the best rule (21) and 45 times a random list. The top of the list is much denser: 9 of the first 10 and 30 of the first 50 accounts were laundering, so a short review already pays off. ACH appears in most top reasons (Table 5), the simulator quirk from Section 2; on real data that reason would need review. The shadow challenger did better on this first labelled production day, with 69 hits. A paired bootstrap of the difference (the same resampled accounts for both models) puts the gain at +4.2 points of P@500 (95% interval 2.2 to 6.2) and +0.013 PR-AUC (0.002 to 0.025), so on this day it is not noise. This is the situation shadow deployment is for: we went live with the simpler model and let new labelled data decide. We recommend promoting v3 once the gain holds on a few more labelled days, which our ten days of data cannot provide.</p>
+<figure>
+  <img src="figures/recall_by_pattern.png" alt="Recall at 2000 by laundering pattern for the three models: highest for fan-out at 35%, then scatter-gather and gather-scatter around 25 to 30%, lowest for fan-in at 5%; graph features help most on stack (18% to 28%)" style="width:84%">
+  <p class="figcap"><b>Figure 5.</b> Recall@2000 by laundering pattern (n = laundering accounts of that pattern in the test window).</p>
+</figure>
+<p><b>Which patterns we catch.</b> 360 of the 534 laundering accounts could be matched to a pattern in IBM's pattern file. At K = 2,000 the models catch fan-out (35%) and the gather/scatter patterns (25-30%) best, and fan-in (5%) worst: each fan-in source sends one ordinary-looking payment, which no account-level feature can tell apart. Graph features help most on stack (18% to 28%) and bipartite (18% to 21%), the layered patterns that only show up in an account's neighbourhood.</p>
+<p><b>Coverage ceiling.</b> Only 534 of the 712 accounts that sent laundering on Sep 9-10 (75%) had any activity in the four-day feature window. The rest cannot be scored by any model built on our features.</p>
+<p><b>A bug we found.</b> The EDA baselines ranked with pandas <span class="mono">nlargest</span>, which breaks ties by row order. For out_big_cnt (only about 3k non-zero accounts) the top 5,000 was filled with tied zero rows in an order correlated with the label, which gave a fake 100% recall at K = 5,000. Our metric function shuffles before a stable sort, a unit test covers it, and the corrected value is 5.6%.</p>
+
+<h2>9. Limitations and next steps</h2>
+<ul>
+  <li><b>Synthetic data.</b> Signals such as the ACH share are simulator artefacts. On real data the features and models must be checked again, and the investigator feedback loop from the proposal (case decisions as labels) would replace our two-day label proxy.</li>
+  <li><b>One test day.</b> With about 550 positives per snapshot the intervals are wide. A longer history (HI-Medium spans more days) would give several labelled days per release decision.</li>
+  <li><b>Calendar drift.</b> Four-day windows mix weekdays and weekends differently. Features normalised by the window's volume, or 7-day windows, should remove most of the drift we saw.</li>
+  <li><b>Coverage.</b> A quarter of laundering senders have no recent activity; KYC and onboarding data would be needed to score them.</li>
+  <li><b>Changes from the proposal.</b> The planned "hide one pattern" drift test was replaced by the real calendar drift the replay produced and by recall per pattern. The AWS deployment is designed (Table 2) but not executed. The Fernet key and the Airflow admin password in the compose file are lab defaults for local use only.</li>
+</ul>
+
+</body>
+</html>

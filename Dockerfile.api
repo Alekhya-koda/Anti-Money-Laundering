@@ -1,0 +1,20 @@
+# Small image for the real-time API, no Spark / Airflow needed here
+FROM python:3.9-slim
+
+# LightGBM needs OpenMP
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgomp1 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-api.txt ./
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+# api code + the shared helper used by batch inference (same reason codes in both)
+COPY api/ ./api/
+COPY scripts/utils/model_utils.py ./utils/model_utils.py
+
+EXPOSE 8000
+
+CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]

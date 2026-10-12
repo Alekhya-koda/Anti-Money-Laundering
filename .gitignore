@@ -1,0 +1,11 @@
+AML Alert System — Project Proposal.pdf
+Group Project Brief.pdf
+data/
+datamart/
+mlflow/
+logs/
+__pycache__/
+.ipynb_checkpoints/
+.idea/
+.venv/
+.DS_Store
