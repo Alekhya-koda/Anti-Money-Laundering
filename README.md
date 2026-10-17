@@ -11,38 +11,36 @@ Data: IBM synthetic AML transactions (Altman et al., NeurIPS 2023), **HI-Small**
 ```
  data/raw/HI-Small_Trans.csv  (stands in for the bank's daily transaction file)
         |
-        |  Airflow DAG "aml_daily_pipeline", one run per day ({{ ds }})
+        |  DAG "aml_data_pipeline", daily, one run per day ({{ ds }})
         v
  bronze  ->  silver (types, dedup, data quality report)
                 |
                 +--> gold feature store (24 account features, PySpark)
                 +--> gold graph features (pagerank, loops, 2-hop; networkx)
                 +--> gold label store (labels arrive 2 days late)
-                        |
-                        v
-                 model_train_check  (train today? no champion yet / champion a week old / drift flag, else skip)
-                        |
-                        +--> model_train_logistic_regression --+
-                        +--> model_train_lightgbm -------------+--> model_select (MLflow tracking + registry,
-                        +--> model_train_lightgbm_graph -------+     aliases champion / challenger / baseline)
-                                                                                   |
-                        +----------------------------------------------------------+
-                        v
-                 model_inference (batch, every day, with the current champion)
-                   - champion -> alert list (top 500 + reasons)
-                   - challenger, baseline -> shadow scores
-                        |
-                 model_monitor
-                   - P@K / PR-AUC when labels arrive
-                   - feature, score and attribution drift (PSI)
-                   - drift -> retrain flag
+
+ DAG "aml_training_pipeline", run by hand (first models, or after a drift alert)
+   model_train_check (train / valid snapshots ready?)
+     +--> model_train_logistic_regression --+
+     +--> model_train_lightgbm -------------+--> model_select --> MLflow registry: model versions,
+     +--> model_train_lightgbm_graph -------+                     aliases champion / challenger / baseline,
+                                                                  chart: champion and challenger vs the LR baseline
+
+ DAG "aml_inference_pipeline", daily, waits for that day's aml_data_pipeline run
+   model_inference (loads the models by alias from the MLflow registry)
+     - champion -> alert list (top 500 + reasons)
+     - challenger -> shadow scores (the LR baseline is only compared at training time)
+   model_monitor
+     - P@K / PR-AUC when labels arrive, data quality
+     - feature, score and attribution drift (PSI)
+     - big drift -> ERROR log "DRIFT ALERT" + drift_alerts.csv, a person decides whether to retrain
 
  FastAPI service (separate container): same feature store + same champion alias -> /accounts/{acct}, /predict, /alerts
 ```
 
 | Service | URL | What |
 |---|---|---|
-| Airflow | http://localhost:8081 (admin / admin) | runs the daily DAG |
+| Airflow | http://localhost:8081 (admin / admin) | runs the data, training and inference DAGs |
 | MLflow | http://localhost:5001 | experiments, model registry, aliases |
 | API | http://localhost:8000/docs | real-time scoring (Swagger UI) |
 
@@ -59,15 +57,32 @@ Needs Docker Desktop (give it at least 8 GB memory).
    ```bash
    docker compose up -d --build
    ```
-3. Open Airflow at http://localhost:8081, log in with admin / admin, and switch on `aml_daily_pipeline`.
-   It has `catchup=True` from 2022-09-01 to 2022-09-10, so it replays the 10 days one by one (about 12 min on a laptop).
-   Or from the terminal: `docker compose exec airflow-scheduler airflow dags unpause aml_daily_pipeline`
-4. When the runs are done:
+3. Open Airflow at http://localhost:8081 (admin / admin). There are three DAGs, switch them on in this order:
+   - `aml_data_pipeline`: has `catchup=True` from 2022-09-01 to 2022-09-10, so it replays the 10 days one by one (about 8 min).
+   - `aml_training_pipeline`: has no schedule, switching it on runs nothing. When the data pipeline is done,
+     train the first models with train date 2022-09-09: Trigger DAG w/ config -> `snapshotdate` = 2022-09-09.
+     This makes v1 (LR, baseline), v2 (LightGBM, champion) and v3 (LightGBM + graph, challenger).
+   - `aml_inference_pipeline`: switch it on after the first models exist. It catches up on the 10 days; a model only
+     scores snapshots from its train date on, so the alert lists start with 2022-09-09.
+
+   From the terminal:
+   ```bash
+   docker compose exec airflow-scheduler airflow dags unpause aml_data_pipeline
+   docker compose exec airflow-scheduler airflow dags unpause aml_training_pipeline
+   docker compose exec airflow-scheduler airflow dags trigger aml_training_pipeline -c '{"snapshotdate": "2022-09-09"}'
+   docker compose exec airflow-scheduler airflow dags unpause aml_inference_pipeline
+   ```
+4. Drift: the monitor writes `DRIFT ALERT` as an ERROR in the log of `run_model_monitor` and adds a row to
+   `datamart/gold/model_monitoring/drift_alerts.csv`. Nothing is retrained automatically. If you decide a new model is
+   needed, trigger `aml_training_pipeline` again (e.g. `snapshotdate` = 2022-09-10). The new model becomes challenger
+   and runs in shadow until you promote it (step 7).
+5. Outputs:
    - alert lists: `datamart/gold/alert_list/alert_list_2022_09_09.csv`
    - model quality per day: `datamart/gold/model_monitoring/model_performance.csv`
-   - drift reports: `datamart/gold/model_monitoring/drift_report_*.csv`
+   - drift reports and alerts: `datamart/gold/model_monitoring/drift_report_*.csv`, `drift_alerts.csv`
+   - champion / challenger vs baseline at each training: `datamart/gold/model_training/model_comparison_*.png`
    - models: MLflow UI -> Models -> `aml-account-risk`
-5. Try the API
+6. Try the API
    ```bash
    curl localhost:8000/health
    curl "localhost:8000/alerts?snapshot_date=2022-09-09&top=5"
@@ -75,7 +90,7 @@ Needs Docker Desktop (give it at least 8 GB memory).
    curl -X POST localhost:8000/predict -H "Content-Type: application/json" \
         -d '{"features": {"out_cnt": 40, "out_uniq_cp": 35, "out_ach_share": 1.0}}'
    ```
-6. Promote a model: in MLflow give the version the `champion` alias, then `curl -X POST localhost:8000/reload`.
+7. Promote a model: in MLflow give the version the `champion` alias, then `curl -X POST localhost:8000/reload`.
    The next batch run picks it up automatically, the API switches without a restart.
 
 Run one job by hand (same command the DAG uses):
@@ -86,8 +101,8 @@ Each model has its own training script, so it can be changed and run on its own:
 ```bash
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow/aml && python3 scripts/model_train_lightgbm.py --snapshotdate 2022-09-09"
 ```
-Note that a training script registers a new MLflow version every time you run it by hand
-(the DAG only calls them when `model_train_check.py` says so), and `model_select.py` moves the aliases.
+Note that a training script registers a new MLflow version every time it runs, and `model_select.py` moves
+the aliases, so normally they are run through `aml_training_pipeline`.
 
 Tests (also run by GitHub Actions on every push / PR, see `.github/workflows/ci.yml`):
 ```bash
@@ -98,20 +113,23 @@ pytest -q tests
 ## Project structure
 
 ```
-dags/aml_pipeline_dag.py        daily DAG (ingest -> stores -> train -> batch inference -> monitor)
+dags/
+  aml_data_dag.py               aml_data_pipeline: ingest -> feature store + label store (daily)
+  aml_training_dag.py           aml_training_pipeline: train the 3 models -> select (by hand)
+  aml_inference_dag.py          aml_inference_pipeline: batch inference -> monitor (daily)
 scripts/
   bronze_transactions.py        raw csv -> bronze (one day)
   silver_transactions.py        bronze -> silver + data quality report
   gold_feature_store.py         4-day account features for a snapshot (PySpark)
   gold_graph_features.py        graph features for a snapshot (networkx)
   gold_label_store.py           labels for a snapshot (2-day window)
-  model_train_check.py          decides if the models are trained today (exit 99 = skip)
+  model_train_check.py          checks that the train / valid snapshots are ready
   model_train_logistic_regression.py   LR baseline (24 base features), grid search, MLflow
   model_train_lightgbm.py              LightGBM (24 base features), random search, MLflow
   model_train_lightgbm_graph.py        LightGBM (24 base + 6 graph features), random search, MLflow
-  model_select.py               compares the day's models, sets the champion / challenger / baseline aliases
+  model_select.py               picks champion / challenger / baseline, draws them against the LR baseline
   model_inference.py            batch scoring, alert list with reason codes
-  model_monitor.py              model quality, drift (PSI), data quality, retrain flag
+  model_monitor.py              model quality, data quality, drift (PSI), drift alert
   download_data.py              gets the HI-Small files with kagglehub
   report_figures.py             tables and charts for the report / slides (run after the DAG)
   utils/                        processing functions + shared model helpers (metrics, PSI, reasons)
@@ -150,14 +168,14 @@ For model development we use three snapshots whose label windows do not overlap:
 
 | model | features | role |
 |---|---|---|
-| Logistic regression (arcsinh + scaling) | 24 base | baseline, runs in shadow |
+| Logistic regression (arcsinh + scaling) | 24 base | baseline, compared at every training |
 | LightGBM | 24 base | champion candidate |
 | LightGBM | 24 base + 6 graph | challenger candidate |
 
 - Tuned on the valid snapshot (grid for LR, 20-try random search for LightGBM with early stopping on valid PR-AUC). All tries are saved in MLflow (`tuning_trials.csv`).
 - **Class imbalance (0.2% positives):** class weights (`scale_pos_weight`, `class_weight="balanced"`) are part of the search, and they make the ranking worse on valid, so the chosen models do not use them. We handle imbalance in the evaluation instead: Precision@K / Recall@K (K = 500, 2000, 5000) and PR-AUC, never accuracy.
-- **Selection rule:** the simplest model within 10% of the best valid PR-AUC becomes champion (the graph features cost an extra daily job). The next best runs as challenger in shadow mode, LR always runs as baseline.
-- **Retraining:** first model as soon as train + valid labels exist, then weekly, or earlier when the monitor finds drift. `model_train_check.py` makes this decision every day; on the other days the training tasks show as skipped in Airflow and the batch inference runs with the current champion. A retrained model only becomes **challenger**; a person promotes it to champion after looking at its shadow results.
+- **Selection rule:** the simplest model within 10% of the best valid PR-AUC becomes champion (the graph features cost an extra daily job). The next best runs as challenger in shadow mode. LR is the baseline: it is not scored every day, but every training run draws champion and challenger against it (`datamart/gold/model_training/model_comparison_<date>.png`).
+- **Retraining:** never automatic. The monitor raises a drift alert (ERROR log + `drift_alerts.csv`) and a person decides whether to run `aml_training_pipeline`. A retrained model only becomes **challenger**; a person promotes it to champion after looking at its shadow results.
 
 ## Results (test snapshot 2022-09-09, 534 laundering accounts among 252,987)
 

@@ -14,9 +14,10 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 # one registered model in MLflow, the aliases tell which version does what:
 #   champion   = production model, its scores go to the investigators
 #   challenger = runs in shadow mode, scores are saved but not used
-#   baseline   = logistic regression, also in shadow, a simple benchmark for the monitor
+#   baseline   = logistic regression, not scored every day, only compared when models are trained
+#                (model_select.py draws champion and challenger against it)
 MODEL_NAME = "aml-account-risk"
-MODEL_ALIASES = ["champion", "challenger", "baseline"]
+MODEL_ALIASES = ["champion", "challenger"]   # the models scored by the daily batch inference
 
 ID_COLUMNS = ["acct", "snapshot_date"]
 GRAPH_FEATURES = ["pagerank", "scc_size", "nbr_out_deg_sum", "nbr_out_deg_avg", "nbr_in_deg_sum", "nbr_in_deg_avg"]
