@@ -93,21 +93,21 @@ with DAG(
     # order LR -> LightGBM -> LightGBM + graph so the MLflow version numbers come out the same every time
     model_train_logistic_regression = BashOperator(
         task_id='run_model_train_logistic_regression',
-        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model logistic_regression',
+        bash_command=run_script + 'model_train_logistic_regression.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
         priority_weight=3,
         weight_rule='absolute',
     )
 
     model_train_lightgbm = BashOperator(
         task_id='run_model_train_lightgbm',
-        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model lightgbm',
+        bash_command=run_script + 'model_train_lightgbm.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
         priority_weight=2,
         weight_rule='absolute',
     )
 
     model_train_lightgbm_graph = BashOperator(
         task_id='run_model_train_lightgbm_graph',
-        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model lightgbm_graph',
+        bash_command=run_script + 'model_train_lightgbm_graph.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
         priority_weight=1,
         weight_rule='absolute',
     )

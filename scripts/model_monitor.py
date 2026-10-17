@@ -14,7 +14,7 @@ from utils.model_utils import MODEL_ALIASES, load_features, load_training_data, 
 #   3. score drift    - PSI of the champion scores, same comparison
 #   4. attribution drift - share of the champion's |feature contribution|, same comparison
 #   5. data quality   - rows ingested yesterday from the silver dq report
-# big drift on an important feature writes retrain_flag.txt -> model_train.py trains a new challenger
+# big drift on an important feature writes retrain_flag.txt -> the 3 model_train_*.py scripts train a new challenger
 # to call this script (from the project folder): python scripts/model_monitor.py --snapshotdate "2022-09-09"
 
 def main(snapshotdate):

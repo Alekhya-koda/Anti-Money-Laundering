@@ -21,7 +21,7 @@ MODEL_ALIASES = ["champion", "challenger", "baseline"]
 ID_COLUMNS = ["acct", "snapshot_date"]
 GRAPH_FEATURES = ["pagerank", "scc_size", "nbr_out_deg_sum", "nbr_out_deg_avg", "nbr_in_deg_sum", "nbr_in_deg_avg"]
 
-# the candidate models, model_train.py trains one of them per Airflow task
+# the candidate models, each has its own training script (model_train_<key>.py) and Airflow task
 # complexity is used by model_select.py: the simplest model that is good enough becomes champion
 CANDIDATE_MODELS = {
     "logistic_regression": {"model_type": "logistic_regression", "feature_set": "base", "complexity": 0},

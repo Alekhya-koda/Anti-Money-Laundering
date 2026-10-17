@@ -22,9 +22,9 @@ Data: IBM synthetic AML transactions (Altman et al., NeurIPS 2023), **HI-Small**
                         v
                  model_train_check  (train today? no champion yet / champion a week old / drift flag, else skip)
                         |
-                        +--> model_train --model logistic_regression --+
-                        +--> model_train --model lightgbm -------------+--> model_select (MLflow tracking + registry,
-                        +--> model_train --model lightgbm_graph -------+     aliases champion / challenger / baseline)
+                        +--> model_train_logistic_regression --+
+                        +--> model_train_lightgbm -------------+--> model_select (MLflow tracking + registry,
+                        +--> model_train_lightgbm_graph -------+     aliases champion / challenger / baseline)
                                                                                    |
                         +----------------------------------------------------------+
                         v
@@ -82,8 +82,12 @@ Run one job by hand (same command the DAG uses):
 ```bash
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow/aml && python3 scripts/gold_feature_store.py --snapshotdate 2022-09-09"
 ```
-Note that `model_train.py` trains and registers a new MLflow version every time you run it by hand
-(the DAG only calls it when `model_train_check.py` says so), and `model_select.py` moves the aliases.
+Each model has its own training script, so it can be changed and run on its own:
+```bash
+docker compose exec airflow-scheduler bash -c "cd /opt/airflow/aml && python3 scripts/model_train_lightgbm.py --snapshotdate 2022-09-09"
+```
+Note that a training script registers a new MLflow version every time you run it by hand
+(the DAG only calls them when `model_train_check.py` says so), and `model_select.py` moves the aliases.
 
 Tests (also run by GitHub Actions on every push / PR, see `.github/workflows/ci.yml`):
 ```bash
@@ -102,7 +106,9 @@ scripts/
   gold_graph_features.py        graph features for a snapshot (networkx)
   gold_label_store.py           labels for a snapshot (2-day window)
   model_train_check.py          decides if the models are trained today (exit 99 = skip)
-  model_train.py                trains one model (--model logistic_regression / lightgbm / lightgbm_graph), tuning, MLflow
+  model_train_logistic_regression.py   LR baseline (24 base features), grid search, MLflow
+  model_train_lightgbm.py              LightGBM (24 base features), random search, MLflow
+  model_train_lightgbm_graph.py        LightGBM (24 base + 6 graph features), random search, MLflow
   model_select.py               compares the day's models, sets the champion / challenger / baseline aliases
   model_inference.py            batch scoring, alert list with reason codes
   model_monitor.py              model quality, drift (PSI), data quality, retrain flag
