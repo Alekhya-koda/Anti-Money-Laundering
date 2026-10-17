@@ -15,18 +15,27 @@ Data: IBM synthetic AML transactions (Altman et al., NeurIPS 2023), **HI-Small**
         v
  bronze  ->  silver (types, dedup, data quality report)
                 |
-                +--> gold feature store (24 account features, PySpark)  --+
-                +--> gold graph features (pagerank, loops, 2-hop; networkx) +--> model_train (weekly / on drift)
-                +--> gold label store (labels arrive 2 days late) --------+        |  MLflow tracking + registry
-                                                                                   v  aliases: champion / challenger / baseline
-                                                                           model_inference (batch)
-                                                                             - champion -> alert list (top 500 + reasons)
-                                                                             - challenger, baseline -> shadow scores
+                +--> gold feature store (24 account features, PySpark)
+                +--> gold graph features (pagerank, loops, 2-hop; networkx)
+                +--> gold label store (labels arrive 2 days late)
+                        |
+                        v
+                 model_train_check  (train today? no champion yet / champion a week old / drift flag, else skip)
+                        |
+                        +--> model_train --model logistic_regression --+
+                        +--> model_train --model lightgbm -------------+--> model_select (MLflow tracking + registry,
+                        +--> model_train --model lightgbm_graph -------+     aliases champion / challenger / baseline)
                                                                                    |
-                                                                           model_monitor
-                                                                             - P@K / PR-AUC when labels arrive
-                                                                             - feature, score and attribution drift (PSI)
-                                                                             - drift -> retrain flag
+                        +----------------------------------------------------------+
+                        v
+                 model_inference (batch, every day, with the current champion)
+                   - champion -> alert list (top 500 + reasons)
+                   - challenger, baseline -> shadow scores
+                        |
+                 model_monitor
+                   - P@K / PR-AUC when labels arrive
+                   - feature, score and attribution drift (PSI)
+                   - drift -> retrain flag
 
  FastAPI service (separate container): same feature store + same champion alias -> /accounts/{acct}, /predict, /alerts
 ```
@@ -73,6 +82,8 @@ Run one job by hand (same command the DAG uses):
 ```bash
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow/aml && python3 scripts/gold_feature_store.py --snapshotdate 2022-09-09"
 ```
+Note that `model_train.py` trains and registers a new MLflow version every time you run it by hand
+(the DAG only calls it when `model_train_check.py` says so), and `model_select.py` moves the aliases.
 
 Tests (also run by GitHub Actions on every push / PR, see `.github/workflows/ci.yml`):
 ```bash
@@ -90,14 +101,16 @@ scripts/
   gold_feature_store.py         4-day account features for a snapshot (PySpark)
   gold_graph_features.py        graph features for a snapshot (networkx)
   gold_label_store.py           labels for a snapshot (2-day window)
-  model_train.py                LR + LightGBM (with / without graph), tuning, MLflow, aliases
+  model_train_check.py          decides if the models are trained today (exit 99 = skip)
+  model_train.py                trains one model (--model logistic_regression / lightgbm / lightgbm_graph), tuning, MLflow
+  model_select.py               compares the day's models, sets the champion / challenger / baseline aliases
   model_inference.py            batch scoring, alert list with reason codes
   model_monitor.py              model quality, drift (PSI), data quality, retrain flag
   download_data.py              gets the HI-Small files with kagglehub
   report_figures.py             tables and charts for the report / slides (run after the DAG)
   utils/                        processing functions + shared model helpers (metrics, PSI, reasons)
 api/app.py                      FastAPI real-time inference
-tests/                          unit tests (metrics, PSI, reason codes, API)
+tests/                          unit tests (metrics, PSI, reason codes, model selection, API)
 reports/                        final report (PDF + editable DOCX + HTML source), figures, result tables
 AML_EDA.ipynb                   first EDA on Colab (DuckDB)
 Dockerfile                      Airflow 2.6.1 + Java 17 + PySpark + LightGBM (from lab 5)
@@ -138,7 +151,7 @@ For model development we use three snapshots whose label windows do not overlap:
 - Tuned on the valid snapshot (grid for LR, 20-try random search for LightGBM with early stopping on valid PR-AUC). All tries are saved in MLflow (`tuning_trials.csv`).
 - **Class imbalance (0.2% positives):** class weights (`scale_pos_weight`, `class_weight="balanced"`) are part of the search, and they make the ranking worse on valid, so the chosen models do not use them. We handle imbalance in the evaluation instead: Precision@K / Recall@K (K = 500, 2000, 5000) and PR-AUC, never accuracy.
 - **Selection rule:** the simplest model within 10% of the best valid PR-AUC becomes champion (the graph features cost an extra daily job). The next best runs as challenger in shadow mode, LR always runs as baseline.
-- **Retraining:** first model as soon as train + valid labels exist, then weekly, or earlier when the monitor finds drift. A retrained model only becomes **challenger**; a person promotes it to champion after looking at its shadow results.
+- **Retraining:** first model as soon as train + valid labels exist, then weekly, or earlier when the monitor finds drift. `model_train_check.py` makes this decision every day; on the other days the training tasks show as skipped in Airflow and the batch inference runs with the current champion. A retrained model only becomes **challenger**; a person promotes it to champion after looking at its shadow results.
 
 ## Results (test snapshot 2022-09-09, 534 laundering accounts among 252,987)
 

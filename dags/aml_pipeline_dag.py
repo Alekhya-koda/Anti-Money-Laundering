@@ -77,23 +77,61 @@ with DAG(
     silver_transactions >> gold_label_store >> label_store_completed
 
 
-    # --- model training (first model, weekly retrain, or retrain when the monitor found drift) ---
-    model_train = BashOperator(
-        task_id='run_model_train',
-        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
+    # --- model training (first models, weekly retrain, or retrain when the monitor found drift) ---
+    # the check exits with 99 when there is nothing to train today,
+    # Airflow then marks it skipped and the training tasks after it are skipped too
+    model_train_check = BashOperator(
+        task_id='run_model_train_check',
+        bash_command=run_script + 'model_train_check.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
+        skip_on_exit_code=99,
     )
 
-    feature_store_completed >> model_train
-    label_store_completed >> model_train
+    feature_store_completed >> model_train_check
+    label_store_completed >> model_train_check
+
+    # one task per candidate model. The executor runs one task at a time, priority_weight keeps the
+    # order LR -> LightGBM -> LightGBM + graph so the MLflow version numbers come out the same every time
+    model_train_logistic_regression = BashOperator(
+        task_id='run_model_train_logistic_regression',
+        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model logistic_regression',
+        priority_weight=3,
+        weight_rule='absolute',
+    )
+
+    model_train_lightgbm = BashOperator(
+        task_id='run_model_train_lightgbm',
+        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model lightgbm',
+        priority_weight=2,
+        weight_rule='absolute',
+    )
+
+    model_train_lightgbm_graph = BashOperator(
+        task_id='run_model_train_lightgbm_graph',
+        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --model lightgbm_graph',
+        priority_weight=1,
+        weight_rule='absolute',
+    )
+
+    # compares the 3 new models and moves the champion / challenger / baseline aliases in MLflow
+    model_select = BashOperator(
+        task_id='run_model_select',
+        bash_command=run_script + 'model_select.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
+    )
+
+    model_train_check >> model_train_logistic_regression >> model_select
+    model_train_check >> model_train_lightgbm >> model_select
+    model_train_check >> model_train_lightgbm_graph >> model_select
 
 
     # --- model inference (champion = production, challenger / baseline = shadow) ---
+    # none_failed: also runs on the days the training was skipped, then it uses the current champion
     model_inference = BashOperator(
         task_id='run_model_inference',
         bash_command=run_script + 'model_inference.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --topk 500',
+        trigger_rule='none_failed',
     )
 
-    model_train >> model_inference
+    model_select >> model_inference
 
 
     # --- model monitoring ---
