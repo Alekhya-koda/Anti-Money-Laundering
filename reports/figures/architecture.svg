@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 930 440" font-family="Arial, Helvetica, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1d2b45"/>
+    </marker>
+    <style>
+      .box { fill: #ffffff; stroke: #1d2b45; stroke-width: 1.2; }
+      .store { fill: #eef3fb; stroke: #1d2b45; stroke-width: 1.2; }
+      .dark { fill: #1d2b45; stroke: #1d2b45; }
+      .accent { fill: #fdf1e6; stroke: #d9782d; stroke-width: 1.4; }
+      .t { font-size: 13px; fill: #1d2b45; font-weight: bold; }
+      .s { font-size: 11px; fill: #45526b; }
+      .w { font-size: 13px; fill: #ffffff; font-weight: bold; }
+      .ws { font-size: 11px; fill: #d5dbe6; }
+      .lane { font-size: 11px; fill: #c4651f; font-weight: bold; letter-spacing: 1px; }
+      .note { font-size: 10px; fill: #45526b; font-style: italic; }
+      .line { stroke: #1d2b45; stroke-width: 1.3; fill: none; }
+      .arrow { stroke: #1d2b45; stroke-width: 1.3; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <!-- lanes -->
+  <rect x="150" y="18" width="595" height="282" rx="8" fill="#f6f4ef" stroke="#d8d4c8"/>
+  <text x="162" y="36" class="lane">AIRFLOW DAG aml_daily_pipeline · @daily, one run = one day</text>
+  <rect x="150" y="318" width="595" height="110" rx="8" fill="#f6f4ef" stroke="#d8d4c8"/>
+  <text x="162" y="336" class="lane">REAL-TIME · FastAPI container</text>
+
+  <!-- source -->
+  <rect x="10" y="120" width="125" height="62" rx="6" class="dark"/>
+  <text x="22" y="143" class="w">Daily transaction</text>
+  <text x="22" y="159" class="w">file (core bank)</text>
+  <text x="22" y="175" class="ws">HI-Small CSV</text>
+
+  <!-- bronze / silver -->
+  <rect x="165" y="120" width="92" height="62" rx="6" class="box"/>
+  <text x="177" y="145" class="t">Bronze</text>
+  <text x="177" y="162" class="s">raw text,</text>
+  <text x="177" y="175" class="s">one day</text>
+
+  <rect x="272" y="120" width="104" height="62" rx="6" class="box"/>
+  <text x="284" y="145" class="t">Silver</text>
+  <text x="284" y="162" class="s">types, dedup,</text>
+  <text x="284" y="175" class="s">DQ report</text>
+
+  <!-- stores -->
+  <rect x="396" y="52" width="148" height="56" rx="6" class="store"/>
+  <text x="408" y="74" class="t">Label store</text>
+  <text x="408" y="91" class="s">label: sends laundering</text>
+  <text x="408" y="103" class="s">in next 2 days (late)</text>
+
+  <rect x="396" y="124" width="148" height="56" rx="6" class="store"/>
+  <text x="408" y="146" class="t">Graph features</text>
+  <text x="408" y="163" class="s">pagerank, loops, 2-hop</text>
+  <text x="408" y="175" class="s">networkx</text>
+
+  <rect x="396" y="196" width="148" height="56" rx="6" class="store"/>
+  <text x="408" y="218" class="t">Feature store</text>
+  <text x="408" y="235" class="s">24 features, past 4 days</text>
+  <text x="408" y="247" class="s">PySpark</text>
+
+  <!-- train / batch / monitor -->
+  <rect x="580" y="52" width="135" height="56" rx="6" class="box"/>
+  <text x="592" y="74" class="t">Train</text>
+  <text x="592" y="91" class="s">LR + LightGBM, tuned</text>
+  <text x="592" y="103" class="s">weekly or on drift</text>
+
+  <rect x="580" y="124" width="135" height="56" rx="6" class="box"/>
+  <text x="592" y="146" class="t">Batch inference</text>
+  <text x="592" y="163" class="s">champion + shadow</text>
+  <text x="592" y="175" class="s">models, reason codes</text>
+
+  <rect x="580" y="196" width="135" height="56" rx="6" class="box"/>
+  <text x="592" y="218" class="t">Monitor</text>
+  <text x="592" y="235" class="s">P@K once labelled,</text>
+  <text x="592" y="247" class="s">PSI drift → retrain</text>
+
+  <!-- registry and outputs -->
+  <rect x="770" y="40" width="140" height="80" rx="6" class="dark"/>
+  <text x="782" y="62" class="w">MLflow</text>
+  <text x="782" y="79" class="ws">tracking + registry</text>
+  <text x="782" y="94" class="ws">aliases: champion,</text>
+  <text x="782" y="108" class="ws">challenger, baseline</text>
+
+  <rect x="770" y="150" width="140" height="60" rx="6" class="accent"/>
+  <text x="782" y="172" class="t">Alert list</text>
+  <text x="782" y="189" class="s">top 500 + 3 reasons,</text>
+  <text x="782" y="202" class="s">every morning</text>
+
+  <rect x="770" y="226" width="140" height="56" rx="6" class="box"/>
+  <text x="782" y="248" class="t">Inference store</text>
+  <text x="782" y="265" class="s">all scores, for the</text>
+  <text x="782" y="277" class="s">monitor and shadow</text>
+
+  <rect x="580" y="350" width="135" height="66" rx="6" class="box"/>
+  <text x="592" y="372" class="t">FastAPI</text>
+  <text x="592" y="389" class="s">/accounts/{acct}</text>
+  <text x="592" y="403" class="s">/predict · /alerts</text>
+
+  <rect x="770" y="350" width="140" height="66" rx="6" class="accent"/>
+  <text x="782" y="372" class="t">Investigators</text>
+  <text x="782" y="389" class="s">case tool, one-off</text>
+  <text x="782" y="403" class="s">checks, dashboard</text>
+
+  <!-- source -> bronze -> silver -> stores -->
+  <path d="M135 151 H163" class="arrow"/>
+  <path d="M257 151 H270" class="arrow"/>
+  <path d="M376 151 H386 M386 80 V224" class="line"/>
+  <path d="M386 80 H394" class="arrow"/>
+  <path d="M386 152 H394" class="arrow"/>
+  <path d="M386 224 H394" class="arrow"/>
+
+  <!-- stores -> bus -> train / batch / monitor -->
+  <path d="M544 80 H560 M544 152 H560 M544 224 H560 M560 80 V224" class="line"/>
+  <path d="M560 80 H578" class="arrow"/>
+  <path d="M560 152 H578" class="arrow"/>
+  <path d="M560 224 H578" class="arrow"/>
+
+  <!-- registry and outputs -->
+  <path d="M715 80 H768" class="arrow"/>
+  <path d="M800 120 V136 H717" class="arrow"/>
+  <path d="M715 165 H768" class="arrow"/>
+  <path d="M715 174 H736 V254 H768" class="arrow"/>
+  <path d="M770 270 H726 V240 H717" class="arrow"/>
+
+  <!-- online path -->
+  <path d="M470 252 V370 Q470 383 483 383 H578" class="arrow"/>
+  <path d="M910 80 H920 V306 H648 V348" class="arrow"/>
+  <path d="M715 383 H768" class="arrow"/>
+  <text x="478" y="300" class="note">same features</text>
+  <text x="760" y="301" class="note">same champion alias</text>
+</svg>

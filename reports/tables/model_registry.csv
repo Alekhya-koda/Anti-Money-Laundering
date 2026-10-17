@@ -1,0 +1,7 @@
+version,model_type,feature_set,model_train_date,aliases
+1,logistic_regression,base,2022-09-09,
+2,lightgbm,base,2022-09-09,champion
+3,lightgbm,base_graph,2022-09-09,
+4,logistic_regression,base,2022-09-10,baseline
+5,lightgbm,base,2022-09-10,challenger
+6,lightgbm,base_graph,2022-09-10,
