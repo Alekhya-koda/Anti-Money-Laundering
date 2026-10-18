@@ -6,8 +6,8 @@ import pandas as pd
 
 from utils.model_utils import MODEL_NAME, MODEL_ALIASES, load_features, load_registered_model, reason_codes
 
-# batch inference: score every account of a snapshot with the champion (production) and the
-# challenger (shadow), then write the morning alert list for the investigators
+# batch inference: score every account of a snapshot with the champion (production) and the shadow
+# models (challenger, or shadow_1 and shadow_2 after a retrain), then write the morning alert list for the investigators
 # to call this script (from the project folder): python scripts/model_inference.py --snapshotdate "2022-09-09"
 
 def main(snapshotdate, topk):

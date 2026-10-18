@@ -8,8 +8,8 @@ from utils.model_utils import MODEL_NAME, CANDIDATE_MODELS, train_valid_snapshot
     load_registered_model, evaluate_scores
 
 # last task of aml_training_pipeline: compares the 3 models just trained on the valid snapshot,
-# moves the aliases in the MLflow model registry (champion / challenger / baseline)
-# and draws champion and challenger against the LR baseline (model_comparison_<date>.png)
+# moves the aliases in the MLflow model registry (first run: champion / challenger, retrain: shadow_1 / shadow_2,
+# always baseline) and draws the models against the LR baseline (model_comparison_<date>.png)
 # to call this script (from the project folder): python scripts/model_select.py --snapshotdate "2022-09-09"
 
 
@@ -31,18 +31,21 @@ def model_label(model_type, feature_set):
     return "LightGBM + graph" if feature_set == "base_graph" else "LightGBM"
 
 
-def comparison_table(candidates_pdf, champion_version, challenger_version, lr_version, champion_row=None):
-    # one row per model with its role, champion first, then challenger, baseline, models not used
-    # champion_row: the older champion scored on this valid snapshot (only after a retrain)
+ROLE_ORDER = ["champion", "challenger", "shadow_1", "shadow_2", "baseline", "not used"]
+
+
+def comparison_table(candidates_pdf, roles, champion_row=None):
+    # one row per model with its role, in the order of ROLE_ORDER
+    # roles: list of (role, version); champion_row: the older champion scored on this valid snapshot (only after a retrain)
     compare_pdf = candidates_pdf[["version", "model_type", "feature_set", "valid_pr_auc", "valid_p_at_500"]].copy()
     if champion_row is not None:
         compare_pdf = pd.concat([compare_pdf, pd.DataFrame([champion_row])], ignore_index=True)
 
-    roles = {}
-    for role, version in [("champion", champion_version), ("challenger", challenger_version), ("baseline", lr_version)]:
-        roles.setdefault(version, []).append(role)
-    compare_pdf["role"] = [" + ".join(roles.get(v, ["not used"])) for v in compare_pdf["version"]]
-    compare_pdf["order"] = [["champion", "challenger", "baseline", "not used"].index(r.split(" + ")[0]) for r in compare_pdf["role"]]
+    version_roles = {}
+    for role, version in roles:
+        version_roles.setdefault(version, []).append(role)
+    compare_pdf["role"] = [" + ".join(version_roles.get(v, ["not used"])) for v in compare_pdf["version"]]
+    compare_pdf["order"] = [ROLE_ORDER.index(r.split(" + ")[0]) for r in compare_pdf["role"]]
     return compare_pdf.sort_values("order").reset_index(drop=True)
 
 
@@ -53,7 +56,8 @@ def plot_comparison(compare_pdf, title, filepath):
     import matplotlib.pyplot as plt
     from matplotlib.ticker import PercentFormatter
 
-    colors = {"champion": "#2a78d6", "challenger": "#eb6834", "baseline": "#9aa0a6"}
+    # blue = production, orange = shadow, grey = baseline
+    colors = {"champion": "#2a78d6", "challenger": "#eb6834", "shadow_1": "#eb6834", "shadow_2": "#eb6834", "baseline": "#9aa0a6"}
     bar_colors = [colors.get(role.split(" + ")[0], "#d0d4d9") for role in compare_pdf["role"]]
     labels = ["v" + v + " " + model_label(m, f) + "\n" + role for v, m, f, role in
               zip(compare_pdf["version"], compare_pdf["model_type"], compare_pdf["feature_set"], compare_pdf["role"])]
@@ -104,28 +108,31 @@ def main(snapshotdate):
         champion = None
 
     if champion is None:
-        # first deployment: chosen model becomes champion, the next one runs in shadow
-        client.set_registered_model_alias(config["model_name"], "champion", best_version)
-        client.set_registered_model_alias(config["model_name"], "challenger", second_version)
-        print('champion -> version', best_version, '| challenger -> version', second_version)
+        # first deployment: chosen model becomes champion, the next one runs in shadow as challenger
+        roles = [("champion", best_version), ("challenger", second_version)]
     else:
-        # retrain: the new model only goes to shadow, a person promotes it after checking the shadow results
-        # (MLflow UI -> model -> version -> add alias "champion")
-        client.set_registered_model_alias(config["model_name"], "challenger", best_version)
-        print('challenger -> version', best_version, '(champion stays version', champion.version + ')')
-    client.set_registered_model_alias(config["model_name"], "baseline", lr_version)
-    print('baseline -> version', lr_version)
+        # retrain (after a drift alert): both new models run in shadow, the champion keeps serving.
+        # The old challenger stops, it was trained on the same old data as the champion.
+        # After checking the shadow results a person makes one new model champion and the other
+        # challenger (README step 7), then it is one champion and one challenger again
+        roles = [("shadow_1", best_version), ("shadow_2", second_version)]
+        print('champion stays version', champion.version)
+        registry_aliases = client.get_registered_model(config["model_name"]).aliases
+        if "challenger" in registry_aliases:
+            client.delete_registered_model_alias(config["model_name"], "challenger")
+            print('challenger alias removed from version', registry_aliases["challenger"])
+    for alias, version in roles + [("baseline", lr_version)]:
+        client.set_registered_model_alias(config["model_name"], alias, version)
+        print(alias, '-> version', version)
 
     # --- save training results ---
     filepath = config["training_results_directory"] + "training_results_" + date_part + ".csv"
     candidates_pdf.to_csv(filepath, index=False)
     print('saved to:', filepath)
 
-    # --- compare champion and challenger with the LR baseline ---
+    # --- compare the models with the LR baseline ---
     # the baseline is not scored every day, this is where we check that the models are worth it.
     # All bars use this training's valid snapshot; after a retrain the older champion is scored on it too
-    champion_version = best_version if champion is None else champion.version
-    challenger_version = second_version if champion is None else best_version
     valid_snapshot_date_str = train_valid_snapshots(snapshotdate)[1]
     champion_row = None
     if champion is not None:
@@ -135,10 +142,11 @@ def main(snapshotdate):
         champion_row = {"version": champion_mv.version, "model_type": champion_mv.tags["model_type"],
                         "feature_set": champion_mv.tags["feature_set"],
                         "valid_pr_auc": results["pr_auc"], "valid_p_at_500": results["p_at_500"]}
-    compare_pdf = comparison_table(candidates_pdf, champion_version, challenger_version, lr_version, champion_row)
+        roles = [("champion", champion_mv.version)] + roles
+    compare_pdf = comparison_table(candidates_pdf, roles + [("baseline", lr_version)], champion_row)
 
     baseline_pr_auc = compare_pdf.loc[compare_pdf["version"] == lr_version, "valid_pr_auc"].iloc[0]
-    for role, version in [("champion", champion_version), ("challenger", challenger_version)]:
+    for role, version in roles:
         pr_auc = compare_pdf.loc[compare_pdf["version"] == version, "valid_pr_auc"].iloc[0]
         print(role, 'version', version, 'valid PR-AUC', round(pr_auc, 4), 'vs baseline', round(baseline_pr_auc, 4), '->',
               'better than baseline' if pr_auc > baseline_pr_auc else 'WARNING: not better than the baseline')

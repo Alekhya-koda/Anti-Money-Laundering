@@ -14,7 +14,7 @@ default_args = {
 run_script = 'cd /opt/airflow/aml && python3 scripts/'
 
 # inference pipeline: every morning score the new snapshot with the models in the MLflow registry
-#   champion = production (alert list), challenger / baseline = shadow (scores kept for the monitor)
+#   champion = production (alert list), challenger or shadow_1 / shadow_2 = shadow (scores kept for the monitor)
 # then monitor model quality, drift and data quality. Big drift -> ERROR log "DRIFT ALERT",
 # no automatic retraining: a person decides whether to run aml_training_pipeline
 # Same schedule as aml_data_pipeline: the run of day ds waits for that day's data run, then scores ds + 1.
@@ -45,7 +45,7 @@ with DAG(
     )
 
 
-    # --- model inference (champion = production, challenger / baseline = shadow) ---
+    # --- model inference (champion = production, the other aliases = shadow) ---
     model_inference = BashOperator(
         task_id='run_model_inference',
         bash_command=run_script + 'model_inference.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --topk 500',

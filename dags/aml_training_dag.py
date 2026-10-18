@@ -18,12 +18,12 @@ run_script = 'cd /opt/airflow/aml && python3 scripts/'
 # Trigger it in the Airflow UI (Trigger DAG w/ config) or from the command line:
 #   airflow dags trigger aml_training_pipeline -c '{"snapshotdate": "2022-09-09"}'
 # snapshotdate = model train date: train snapshot = snapshotdate - 4 days, valid snapshot = snapshotdate - 2 days
-# The first run sets champion / challenger / baseline. Later runs only set challenger and baseline,
-# the new model runs in shadow until a person promotes it (MLflow alias "champion" + POST /reload on the API)
+# The first run sets champion / challenger / baseline. A retrain sets shadow_1 / shadow_2 (the 2 new models)
+# and baseline, the champion keeps serving until a person promotes one of them (README step 7)
 with DAG(
     'aml_training_pipeline',
     default_args=default_args,
-    description='AML account risk: train the 3 candidate models, pick champion / challenger / baseline (manual)',
+    description='AML account risk: train the 3 candidate models, set the MLflow aliases (manual)',
     schedule_interval=None,
     start_date=datetime(2022, 9, 1),
     catchup=False,
@@ -60,7 +60,7 @@ with DAG(
         weight_rule='absolute',
     )
 
-    # compares the 3 new models and moves the champion / challenger / baseline aliases in MLflow
+    # compares the 3 new models and moves the aliases in MLflow
     model_select = BashOperator(
         task_id='run_model_select',
         bash_command=run_script + 'model_select.py --snapshotdate "{{ params.snapshotdate }}"',

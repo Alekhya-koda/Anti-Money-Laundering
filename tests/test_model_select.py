@@ -31,7 +31,8 @@ def test_logistic_regression_wins_when_good_enough():
 
 
 def test_comparison_table_roles_after_retrain():
-    # retrain: new models 4 (LR), 5 (LightGBM), 6 (graph); the old champion 2 is added as an extra row
+    # retrain: new models 4 (LR), 5 (LightGBM), 6 (graph) -> both LightGBM models go to shadow,
+    # the old champion 2 is added as an extra row
     new_models = pd.DataFrame({
         "version": ["4", "5", "6"],
         "model_type": ["logistic_regression", "lightgbm", "lightgbm"],
@@ -40,6 +41,7 @@ def test_comparison_table_roles_after_retrain():
         "valid_p_at_500": [0.07, 0.11, 0.13],
     })
     champion_row = {"version": "2", "model_type": "lightgbm", "feature_set": "base", "valid_pr_auc": 0.068, "valid_p_at_500": 0.11}
-    table = comparison_table(new_models, "2", "5", "4", champion_row)
-    assert list(table["version"]) == ["2", "5", "4", "6"]
-    assert list(table["role"]) == ["champion", "challenger", "baseline", "not used"]
+    roles = [("champion", "2"), ("shadow_1", "5"), ("shadow_2", "6"), ("baseline", "4")]
+    table = comparison_table(new_models, roles, champion_row)
+    assert list(table["version"]) == ["2", "5", "6", "4"]
+    assert list(table["role"]) == ["champion", "shadow_1", "shadow_2", "baseline"]

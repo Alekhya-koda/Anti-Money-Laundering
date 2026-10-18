@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 
-from utils.model_utils import MODEL_ALIASES, load_features, load_training_data, load_registered_model, \
+from mlflow.tracking import MlflowClient
+
+from utils.model_utils import MODEL_NAME, MODEL_ALIASES, load_features, load_training_data, load_registered_model, \
     evaluate_scores, psi, explain
 
 # daily monitoring, runs after the batch inference
@@ -139,20 +141,24 @@ def main(snapshotdate):
         print('no drift on the important features')
     else:
         # no automatic retraining: alert a person, who checks the drift report and the shadow results
-        # and decides whether to run aml_training_pipeline (and later whether to promote the new model)
-        challenger_model, challenger_mv = load_registered_model("challenger")
-        challenger_version = challenger_mv.version if challenger_mv is not None else "-"
+        # and decides whether to run aml_training_pipeline (and later whether to promote a new model)
+        registry_aliases = MlflowClient().get_registered_model(MODEL_NAME).aliases
+        shadow_models = ", ".join(alias + " v" + registry_aliases[alias] for alias in MODEL_ALIASES[1:] if alias in registry_aliases)
+        shadow_models = shadow_models if shadow_models else "-"
         logging.error('DRIFT ALERT snapshot %s: champion version %s drifted on %s (PSI > %s). '
-                      'Check %s and the shadow results of challenger version %s, '
+                      'Check %s and the shadow results of %s, '
                       'then decide whether to run aml_training_pipeline.',
                       snapshotdate, champion_mv.version, ", ".join(drifted), config["psi_threshold"],
-                      filepath, challenger_version)
+                      filepath, shadow_models)
+        # for now the alert only goes to the task log and drift_alerts.csv, someone has to look at them.
+        # In production it would also be pushed to the person on duty here, e.g. a Telegram message
+        # (bot API sendMessage, bot token and chat id from environment variables)
 
         # keep every alert in one file, replace the row of this snapshot if the job is re-run
         alert_pdf = pd.DataFrame([{
             "snapshot_date": snapshotdate,
             "champion_version": champion_mv.version,
-            "challenger_version": challenger_version,
+            "shadow_models": shadow_models,
             "drifted": ", ".join(drifted),
         }])
         alert_filepath = config["monitoring_directory"] + "drift_alerts.csv"

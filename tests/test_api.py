@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
@@ -23,6 +24,7 @@ def setup_module():
     app_module.state["model"] = small_model()
     app_module.state["version"] = "test"
     app_module.state["snapshots"] = {}
+    app_module.state["checked_at"] = time.time()
 
 
 def test_health():
@@ -67,3 +69,13 @@ def test_account_lookup(tmp_path):
 
     response = client.get("/accounts/ZZZ?snapshot_date=2022-09-09")
     assert response.status_code == 404
+
+
+def test_reload_when_champion_moved(monkeypatch):
+    # a person promoted another version in MLflow: the next request after the check interval loads it
+    loaded = []
+    monkeypatch.setattr(app_module, "champion_version", lambda: "7")
+    monkeypatch.setattr(app_module, "load_champion", lambda: loaded.append("7"))
+    app_module.state["checked_at"] = 0
+    app_module.get_model()
+    assert loaded == ["7"]

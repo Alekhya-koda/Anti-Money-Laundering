@@ -1,24 +1,27 @@
 import os
 import sys
 import glob
+import time
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from mlflow.tracking import MlflowClient
 
 # in the container utils/ sits next to api/, when running from the repo it is in scripts/
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from utils.model_utils import load_registered_model, load_features, reason_codes
+from utils.model_utils import MODEL_NAME, load_registered_model, load_features, reason_codes
 
 # real-time inference: same champion model (MLflow alias) and same feature store as the batch job,
 # so a score from the API matches the score in the morning alert list
 
 DATAMART_DIR = os.getenv("DATAMART_DIR", "datamart/")
+CHAMPION_CHECK_SECONDS = int(os.getenv("CHAMPION_CHECK_SECONDS", "60"))
 
 app = FastAPI(title="AML account risk API",
               description="Scores bank accounts with the champion model from the MLflow model registry")
 
 # champion model and the snapshots already scored are kept in memory
-state = {"model": None, "version": None, "snapshots": {}}
+state = {"model": None, "version": None, "snapshots": {}, "checked_at": 0}
 
 
 def load_champion():
@@ -28,12 +31,29 @@ def load_champion():
     state["model"] = model
     state["version"] = mv.version
     state["snapshots"] = {}
+    state["checked_at"] = time.time()
     print('loaded champion version', mv.version)
+
+
+def champion_version():
+    return MlflowClient().get_model_version_by_alias(MODEL_NAME, "champion").version
 
 
 def get_model():
     if state["model"] is None:
         load_champion()
+    elif time.time() - state["checked_at"] > CHAMPION_CHECK_SECONDS:
+        # every minute check which version has the champion alias and reload if it moved, so the API
+        # follows a promotion even without POST /reload (which only reaches one container behind a load balancer)
+        state["checked_at"] = time.time()
+        try:
+            version = champion_version()
+        except Exception as e:
+            print('could not check the champion alias, keep version', state["version"], ':', e)
+            version = state["version"]
+        if version != state["version"]:
+            print('champion alias moved from version', state["version"], 'to', version)
+            load_champion()
     return state["model"]
 
 
@@ -72,7 +92,7 @@ def health():
 
 @app.post("/reload")
 def reload():
-    # call this after a new version gets the "champion" alias in MLflow, no restart needed
+    # switch to the new champion right away (model_promote.py calls it), no restart needed
     load_champion()
     return {"status": "reloaded", "champion_version": state["version"]}
 
