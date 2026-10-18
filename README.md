@@ -78,7 +78,7 @@ Needs Docker Desktop (give it at least 8 GB memory).
    docker compose up -d --build
    ```
 3. Open Airflow at http://localhost:8081 (admin / admin). There are three DAGs, switch them on in this order:
-   - `aml_data_pipeline`: has `catchup=True` from 2022-09-01 to 2022-09-10, so it replays the 10 days one by one (about 8 min).
+   - `aml_data_pipeline`: has `catchup=True` from 2022-09-01 to 2022-09-10, so it replays the 10 days one by one (about 7 min).
    - `aml_training_pipeline`: has no schedule, switching it on runs nothing. When the data pipeline is done,
      train the first models with train date 2022-09-09: Trigger DAG w/ config -> `snapshotdate` = 2022-09-09.
      This makes v1 (LR, baseline), v2 (LightGBM, champion) and v3 (LightGBM + graph, challenger).
@@ -169,7 +169,7 @@ scripts/
   utils/                        processing functions + shared model helpers (metrics, PSI, reasons)
 api/app.py                      FastAPI real-time inference
 tests/                          unit tests (metrics, PSI, reason codes, model selection, promotion, API)
-reports/                        final report (PDF + editable DOCX + HTML source), figures, result tables
+reports/                        final report (PDF + editable DOCX + HTML source), slides (PPTX), figures, result tables
 AML_EDA.ipynb                   first EDA on Colab (DuckDB)
 Dockerfile                      Airflow 2.6.1 + Java 17 + PySpark + LightGBM (from lab 5)
 Dockerfile.api                  small python:3.9 image for the API
@@ -245,8 +245,8 @@ In the replay only Sep 9 has labelled model scores (challenger v3: P@500 13.8% a
 
 The champion's top 500 held 47 laundering accounts (9 of the top 10). The shadow challenger with graph features
 did better on this day (+4.2 points P@500, paired bootstrap 95% CI 2.2 to 6.2). After the retrain the new graph model
-(v6) runs in shadow next to the new LightGBM (v5); the plan is to promote the graph model if a few more labelled days
-confirm it. Full numbers with intervals: `reports/tables/test_results.csv`, report: `reports/AML_Final_Report.pdf`.
+(v6) runs in shadow next to the new LightGBM (v5); the plan is to promote the graph model once it meets the promotion
+criteria above. Full numbers with intervals: `reports/tables/test_results.csv`, report: `reports/AML_Final_Report.pdf`.
 To rebuild the charts and tables after a run:
 ```bash
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow/aml && python3 scripts/report_figures.py"

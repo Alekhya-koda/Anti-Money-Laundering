@@ -45,7 +45,7 @@
   <tr><th style="width:22%">User</th><th style="width:40%">Need</th><th>What they use</th></tr>
   <tr><td>AML investigator (primary)</td><td>See the riskiest accounts first, check one account on demand</td><td>Morning alert list (CSV or GET /alerts), GET /accounts/{acct}</td></tr>
   <tr><td>Compliance manager</td><td>Know if alerts are worth the time, plan workload</td><td>Daily precision and alert volume (model_performance.csv)</td></tr>
-  <tr><td>ML engineer</td><td>Keep the pipeline healthy, decide on retraining, approve and roll back models</td><td>Airflow UI, MLflow registry, drift reports</td></tr>
+  <tr><td>ML engineer</td><td>Keep the pipeline healthy, decide on retraining, approve and roll back models</td><td>Airflow UI, MLflow registry, drift reports, model_promote.py</td></tr>
 </table>
 <p><b>Success criteria.</b> We rank accounts, not transactions, because investigators open cases per account. With 0.2% positives accuracy says nothing, so we report Precision@K and Recall@K for K = 500 (the daily review capacity we assume), 2,000 and 5,000, plus PR-AUC, and compare against simple rule rankings of the same accounts.</p>
 
@@ -63,7 +63,7 @@
 
 <h2>3. System architecture</h2>
 <figure>
-  <img src="figures/architecture.svg" alt="Architecture: three Airflow DAGs. The daily data DAG builds bronze, silver, feature, graph and label stores; the manual training DAG registers models in MLflow; the daily inference DAG scores with the champion and the shadow models and runs the monitor. A FastAPI service shares the feature store and the champion model" style="width:100%">
+  <img src="figures/architecture.svg" alt="Architecture: three Airflow DAGs. The daily data DAG builds bronze, silver, feature, graph and label stores; the manual training DAG registers models in MLflow; the daily inference DAG scores with the champion and the shadow models and runs the monitor; a person promotes a shadow model with model_promote.py. A FastAPI service shares the feature store and the champion model" style="width:100%">
   <p class="figcap"><b>Figure 1.</b> Architecture. The three DAGs exchange data only through the stores and MLflow. Batch and real-time inference share the feature store and the champion alias.</p>
 </figure>
 <p>Everything starts with <span class="mono">docker compose up</span> (Table 2): Airflow 2.6 (our image extends the lab 5 image with Java 17, PySpark 3.5 and LightGBM), an MLflow 2.17 server with a SQLite backend and an artifact store on a volume, and a separate, small FastAPI container. Data sits in a parquet datamart with bronze, silver and gold layers. Each piece has a managed AWS equivalent; we designed for that move but did not deploy to AWS.</p>
