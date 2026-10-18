@@ -1,20 +1,24 @@
 import argparse
+import logging
 import os
 import pprint
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 
-from utils.model_utils import MODEL_ALIASES, load_features, load_training_data, load_registered_model, \
+from mlflow.tracking import MlflowClient
+
+from utils.model_utils import MODEL_NAME, MODEL_ALIASES, load_features, load_training_data, load_registered_model, \
     evaluate_scores, psi, explain
 
 # daily monitoring, runs after the batch inference
 #   1. model quality  - labels come 2 days late, so check the predictions made for snapshot_date - 2
-#   2. data drift     - PSI of each feature, today's snapshot vs the champion's training snapshot
-#   3. score drift    - PSI of the champion scores, same comparison
-#   4. attribution drift - share of the champion's |feature contribution|, same comparison
-#   5. data quality   - rows ingested yesterday from the silver dq report
-# big drift on an important feature writes retrain_flag.txt -> model_train.py trains a new challenger
+#   2. data quality   - rows ingested yesterday from the silver dq report
+#   3. data drift     - PSI of each feature, today's snapshot vs the champion's training snapshot
+#   4. score drift    - PSI of the champion scores, same comparison
+#   5. attribution drift - share of the champion's |feature contribution|, same comparison
+# big drift on an important feature (or on the score) -> ERROR log "DRIFT ALERT" + a row in drift_alerts.csv,
+# nothing is retrained automatically: a person checks the reports and decides whether to run aml_training_pipeline
 # to call this script (from the project folder): python scripts/model_monitor.py --snapshotdate "2022-09-09"
 
 def main(snapshotdate):
@@ -70,11 +74,27 @@ def main(snapshotdate):
         perf_pdf.to_csv(filepath, index=False)
         print('saved to:', filepath)
 
-    # --- 2, 3, 4. drift of today's snapshot vs the champion's training snapshot ---
+    # --- 2. data quality of the last ingested day (also before there is a model) ---
+    yesterday = (config["snapshot_date"] - timedelta(days=1)).strftime("%Y_%m_%d")
+    dq_filepath = config["dq_directory"] + "dq_report_" + yesterday + ".csv"
+    if os.path.exists(dq_filepath):
+        dq_pdf = pd.read_csv(dq_filepath)
+        print(dq_pdf.to_string(index=False))
+        if dq_pdf["silver_rows"].iloc[0] == 0:
+            print('WARNING: no transactions ingested yesterday')
+        if dq_pdf["invalid_removed"].iloc[0] > 0.01 * dq_pdf["bronze_rows"].iloc[0]:
+            print('WARNING: more than 1% of rows removed as invalid')
+
+    # --- 3, 4, 5. drift of today's snapshot vs the champion's training snapshot ---
     champion_model, champion_mv = load_registered_model("champion")
     current_pdf = load_features(snapshotdate)
     if champion_model is None or current_pdf is None:
         print('no champion or no features yet, skip drift')
+        print('\n\n---completed job---\n\n')
+        return
+    if snapshotdate < champion_mv.tags["model_train_date"]:
+        # same rule as model_inference.py: the champion does not score snapshots older than its train date
+        print('champion version', champion_mv.version, 'was trained on', champion_mv.tags["model_train_date"], '-> skip drift')
         print('\n\n---completed job---\n\n')
         return
 
@@ -109,18 +129,7 @@ def main(snapshotdate):
     print(drift_pdf.sort_values("psi", ascending=False).head(12).round(4).to_string(index=False))
     print('saved to:', filepath)
 
-    # --- 5. data quality of the last ingested day ---
-    yesterday = (config["snapshot_date"] - timedelta(days=1)).strftime("%Y_%m_%d")
-    dq_filepath = config["dq_directory"] + "dq_report_" + yesterday + ".csv"
-    if os.path.exists(dq_filepath):
-        dq_pdf = pd.read_csv(dq_filepath)
-        print(dq_pdf.to_string(index=False))
-        if dq_pdf["silver_rows"].iloc[0] == 0:
-            print('WARNING: no transactions ingested yesterday')
-        if dq_pdf["invalid_removed"].iloc[0] > 0.01 * dq_pdf["bronze_rows"].iloc[0]:
-            print('WARNING: more than 1% of rows removed as invalid')
-
-    # --- retrain flag ---
+    # --- drift alert ---
     # only the features the champion relies on matter, so watch the top ones by attribution
     watch = drift_pdf.dropna(subset=["ref_attribution_share"]).sort_values("ref_attribution_share", ascending=False)
     watch = watch.head(config["top_features_to_watch"])
@@ -128,19 +137,37 @@ def main(snapshotdate):
     if drift_pdf.loc[drift_pdf["feature"] == "score", "psi"].iloc[0] > config["psi_threshold"]:
         drifted.append("score")
 
-    # if a newer challenger is already waiting for approval, do not ask for another retrain
-    challenger_model, challenger_mv = load_registered_model("challenger")
-    waiting = challenger_mv is not None and challenger_mv.tags["model_train_date"] > champion_mv.tags["model_train_date"]
-
-    flag_filepath = config["monitoring_directory"] + "retrain_flag.txt"
-    if drifted and not waiting:
-        with open(flag_filepath, "w") as f:
-            f.write(snapshotdate + " drift on: " + ", ".join(drifted) + "\n")
-        print('DRIFT on', drifted, '-> retrain flag written:', flag_filepath)
-    elif drifted:
-        print('drift on', drifted, 'but challenger version', challenger_mv.version, 'is already waiting for approval')
-    else:
+    if not drifted:
         print('no drift on the important features')
+    else:
+        # no automatic retraining: alert a person, who checks the drift report and the shadow results
+        # and decides whether to run aml_training_pipeline (and later whether to promote a new model)
+        registry_aliases = MlflowClient().get_registered_model(MODEL_NAME).aliases
+        shadow_models = ", ".join(alias + " v" + registry_aliases[alias] for alias in MODEL_ALIASES[1:] if alias in registry_aliases)
+        shadow_models = shadow_models if shadow_models else "-"
+        logging.error('DRIFT ALERT snapshot %s: champion version %s drifted on %s (PSI > %s). '
+                      'Check %s and the shadow results of %s, '
+                      'then decide whether to run aml_training_pipeline.',
+                      snapshotdate, champion_mv.version, ", ".join(drifted), config["psi_threshold"],
+                      filepath, shadow_models)
+        # for now the alert only goes to the task log and drift_alerts.csv, someone has to look at them.
+        # In production it would also be pushed to the person on duty here, e.g. a Telegram message
+        # (bot API sendMessage, bot token and chat id from environment variables)
+
+        # keep every alert in one file, replace the row of this snapshot if the job is re-run
+        alert_pdf = pd.DataFrame([{
+            "snapshot_date": snapshotdate,
+            "champion_version": champion_mv.version,
+            "shadow_models": shadow_models,
+            "drifted": ", ".join(drifted),
+        }])
+        alert_filepath = config["monitoring_directory"] + "drift_alerts.csv"
+        if os.path.exists(alert_filepath):
+            history_pdf = pd.read_csv(alert_filepath, dtype=str)
+            history_pdf = history_pdf[history_pdf["snapshot_date"] != snapshotdate]
+            alert_pdf = pd.concat([history_pdf, alert_pdf], ignore_index=True)
+        alert_pdf.to_csv(alert_filepath, index=False)
+        print('alert saved to:', alert_filepath)
 
     print('\n\n---completed job---\n\n')
 

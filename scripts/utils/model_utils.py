@@ -5,6 +5,7 @@ import pandas as pd
 import mlflow
 import mlflow.sklearn
 
+from datetime import datetime, timedelta
 from mlflow.tracking import MlflowClient
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -13,12 +14,23 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 # one registered model in MLflow, the aliases tell which version does what:
 #   champion   = production model, its scores go to the investigators
 #   challenger = runs in shadow mode, scores are saved but not used
-#   baseline   = logistic regression, also in shadow, a simple benchmark for the monitor
+#   shadow_1, shadow_2 = the 2 new models of a retrain, also in shadow mode; the old challenger stops.
+#                A person makes one of them champion and the other challenger (README step 7)
+#   baseline   = logistic regression, not scored every day, only compared when models are trained
+#                (model_select.py draws the models against it)
 MODEL_NAME = "aml-account-risk"
-MODEL_ALIASES = ["champion", "challenger", "baseline"]
+MODEL_ALIASES = ["champion", "challenger", "shadow_1", "shadow_2"]   # scored by the daily batch inference (if set)
 
 ID_COLUMNS = ["acct", "snapshot_date"]
 GRAPH_FEATURES = ["pagerank", "scc_size", "nbr_out_deg_sum", "nbr_out_deg_avg", "nbr_in_deg_sum", "nbr_in_deg_avg"]
+
+# the candidate models, each has its own training script (model_train_<key>.py) and Airflow task
+# complexity is used by model_select.py: the simplest model that is good enough becomes champion
+CANDIDATE_MODELS = {
+    "logistic_regression": {"model_type": "logistic_regression", "feature_set": "base", "complexity": 0},
+    "lightgbm": {"model_type": "lightgbm", "feature_set": "base", "complexity": 1},
+    "lightgbm_graph": {"model_type": "lightgbm", "feature_set": "base_graph", "complexity": 2},
+}
 
 # human readable reason for each feature, shown to the investigators next to the score
 # (written neutral: a low value can also push the score up)
@@ -91,6 +103,22 @@ def load_training_data(snapshot_date_str, datamart_directory="datamart/"):
     data_pdf = features_pdf.merge(labels_pdf, on="acct", how="left")
     data_pdf["label"] = data_pdf["label"].fillna(0).astype(int)
     return data_pdf
+
+
+def train_valid_snapshots(model_train_date_str):
+    '''
+    labels are 2 days late, so on the train date the newest labelled snapshot is 2 days ago (valid)
+    the train snapshot is 2 days before that, so the label windows of train and valid do not overlap
+
+      snapshot     features from     labels from
+      09-05 train  09-01 .. 09-04    09-05 .. 09-06
+      09-07 valid  09-03 .. 09-06    09-07 .. 09-08
+      09-09 test   09-05 .. 09-08    09-09 .. 09-10   <- model trained on 09-09 scores this one
+    '''
+    model_train_date = datetime.strptime(model_train_date_str, "%Y-%m-%d")
+    train_snapshot_date_str = (model_train_date - timedelta(days=4)).strftime("%Y-%m-%d")
+    valid_snapshot_date_str = (model_train_date - timedelta(days=2)).strftime("%Y-%m-%d")
+    return train_snapshot_date_str, valid_snapshot_date_str
 
 
 def feature_columns(pdf, with_graph=True):

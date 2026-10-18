@@ -13,16 +13,18 @@ default_args = {
 # the project folder is mounted at /opt/airflow/aml, scripts use paths relative to it
 run_script = 'cd /opt/airflow/aml && python3 scripts/'
 
-# one run = one day of transactions ({{ ds }}), we replay Sep 1 - Sep 10 2022 as if it was production
-#   - bronze / silver ingest the transactions of the day
+# data pipeline: one run = one day of transactions ({{ ds }}), we replay Sep 1 - Sep 10 2022 as if it was production
+#   - bronze / silver ingest the transactions of the day (+ data quality report)
 #   - features for tomorrow morning use the last 4 days up to today        -> ds + 1
 #   - labels need 2 days of future data, so today the labels of yesterday's
 #     snapshot are complete                                                 -> ds - 1
-#   - the model scores tomorrow morning's snapshot                          -> ds + 1
+# the other 2 DAGs only read what this one writes:
+#   aml_training_pipeline  (dags/aml_training_dag.py, run by hand)  trains models from the feature + label store
+#   aml_inference_pipeline (dags/aml_inference_dag.py, daily)       scores the feature store, then monitors
 with DAG(
-    'aml_daily_pipeline',
+    'aml_data_pipeline',
     default_args=default_args,
-    description='AML account risk: ingest, feature/label store, train, batch inference, monitor',
+    description='AML account risk: ingest transactions, build the feature store and the label store',
     schedule_interval='@daily',
     start_date=datetime(2022, 9, 1),
     end_date=datetime(2022, 9, 10),
@@ -77,29 +79,8 @@ with DAG(
     silver_transactions >> gold_label_store >> label_store_completed
 
 
-    # --- model training (first model, weekly retrain, or retrain when the monitor found drift) ---
-    model_train = BashOperator(
-        task_id='run_model_train',
-        bash_command=run_script + 'model_train.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
-    )
+    # --- done for the day, aml_inference_pipeline waits for this task ---
+    data_pipeline_completed = DummyOperator(task_id="data_pipeline_completed")
 
-    feature_store_completed >> model_train
-    label_store_completed >> model_train
-
-
-    # --- model inference (champion = production, challenger / baseline = shadow) ---
-    model_inference = BashOperator(
-        task_id='run_model_inference',
-        bash_command=run_script + 'model_inference.py --snapshotdate "{{ macros.ds_add(ds, 1) }}" --topk 500',
-    )
-
-    model_train >> model_inference
-
-
-    # --- model monitoring ---
-    model_monitor = BashOperator(
-        task_id='run_model_monitor',
-        bash_command=run_script + 'model_monitor.py --snapshotdate "{{ macros.ds_add(ds, 1) }}"',
-    )
-
-    model_inference >> model_monitor
+    feature_store_completed >> data_pipeline_completed
+    label_store_completed >> data_pipeline_completed

@@ -6,8 +6,8 @@ import pandas as pd
 
 from utils.model_utils import MODEL_NAME, MODEL_ALIASES, load_features, load_registered_model, reason_codes
 
-# batch inference: score every account of a snapshot with the champion (production) and the
-# challenger / baseline (shadow), then write the morning alert list for the investigators
+# batch inference: score every account of a snapshot with the champion (production) and the shadow
+# models (challenger, or shadow_1 and shadow_2 after a retrain), then write the morning alert list for the investigators
 # to call this script (from the project folder): python scripts/model_inference.py --snapshotdate "2022-09-09"
 
 def main(snapshotdate, topk):
@@ -23,15 +23,21 @@ def main(snapshotdate, topk):
     pprint.pprint(config)
 
     # --- load models from the model registry ---
+    # a model only scores snapshots from its train date on: older snapshots were used to train or tune it
+    # (happens when the inference DAG catches up on old days after the first models were trained)
     models = {}
     for alias in MODEL_ALIASES:
         model, mv = load_registered_model(alias)
-        if model is not None:
-            models[alias] = (model, mv)
-            print('loaded', alias, '-> version', mv.version, mv.tags.get("model_type"), mv.tags.get("feature_set"))
+        if model is None:
+            continue
+        if snapshotdate < mv.tags["model_train_date"]:
+            print(alias, 'version', mv.version, 'was trained on', mv.tags["model_train_date"], '-> does not score this snapshot')
+            continue
+        models[alias] = (model, mv)
+        print('loaded', alias, '-> version', mv.version, mv.tags.get("model_type"), mv.tags.get("feature_set"))
 
     if "champion" not in models:
-        print('no champion model in the registry yet, skipped')
+        print('no champion model for this snapshot yet, skipped')
         return
 
     # --- load feature store ---

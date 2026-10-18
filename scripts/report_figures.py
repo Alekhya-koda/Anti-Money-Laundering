@@ -8,6 +8,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import logging
 from sklearn.metrics import average_precision_score
+import mlflow.sklearn
 from mlflow.tracking import MlflowClient
 
 from utils.model_utils import load_training_data, precision_recall_at_k
@@ -57,13 +58,19 @@ eval_pdf = load_training_data(TEST_DATE)
 y = eval_pdf["label"].values
 scores = {"Rule: out_cnt": eval_pdf["out_cnt"].values, "Rule: out_big_cnt": eval_pdf["out_big_cnt"].values}
 roles = {}
-for alias in ["champion", "challenger", "baseline"]:
+for alias in ["champion", "challenger"]:
     filepath = "datamart/gold/model_predictions/" + alias + "/" + alias + "_predictions_" + TEST_DATE.replace('-','_') + ".parquet"
     predictions_pdf = pd.read_parquet(filepath)
     name = version_label[str(predictions_pdf["model_version"].iloc[0])]
     merged = eval_pdf[["acct"]].merge(predictions_pdf[["acct", "score"]], on="acct", how="left")
     scores[name] = merged["score"].fillna(0).values
     roles[name] = alias + " (v" + str(predictions_pdf["model_version"].iloc[0]) + ")"
+
+# the LR baseline is not scored every day: score the test snapshot with the LR trained together with the champion
+lr_version = training_pdf.loc[training_pdf["model_type"] == "logistic_regression", "version"].iloc[0]
+lr_model = mlflow.sklearn.load_model("models:/aml-account-risk/" + lr_version)
+scores[version_label[lr_version]] = lr_model.predict_proba(eval_pdf[list(lr_model.feature_names_in_)])[:, 1]
+roles[version_label[lr_version]] = "baseline (v" + lr_version + ")"
 
 rng = np.random.default_rng(88)
 boot_idx = [rng.integers(0, len(y), len(y)) for _ in range(200)]

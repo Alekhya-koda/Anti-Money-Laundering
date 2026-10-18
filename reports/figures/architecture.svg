@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 930 440" font-family="Arial, Helvetica, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -48 930 488" font-family="Arial, Helvetica, sans-serif">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#1d2b45"/>
@@ -21,7 +21,7 @@
 
   <!-- lanes -->
   <rect x="150" y="18" width="595" height="282" rx="8" fill="#f6f4ef" stroke="#d8d4c8"/>
-  <text x="162" y="36" class="lane">AIRFLOW DAG aml_daily_pipeline · @daily, one run = one day</text>
+  <text x="162" y="36" class="lane">AIRFLOW · 3 DAGs: data @daily · training manual · inference @daily</text>
   <rect x="150" y="318" width="595" height="110" rx="8" fill="#f6f4ef" stroke="#d8d4c8"/>
   <text x="162" y="336" class="lane">REAL-TIME · FastAPI container</text>
 
@@ -60,9 +60,9 @@
 
   <!-- train / batch / monitor -->
   <rect x="580" y="52" width="135" height="56" rx="6" class="box"/>
-  <text x="592" y="74" class="t">Train</text>
+  <text x="592" y="74" class="t">Train (manual)</text>
   <text x="592" y="91" class="s">LR + LightGBM, tuned</text>
-  <text x="592" y="103" class="s">weekly or on drift</text>
+  <text x="592" y="103" class="s">run by a person</text>
 
   <rect x="580" y="124" width="135" height="56" rx="6" class="box"/>
   <text x="592" y="146" class="t">Batch inference</text>
@@ -72,14 +72,20 @@
   <rect x="580" y="196" width="135" height="56" rx="6" class="box"/>
   <text x="592" y="218" class="t">Monitor</text>
   <text x="592" y="235" class="s">P@K once labelled,</text>
-  <text x="592" y="247" class="s">PSI drift → retrain</text>
+  <text x="592" y="247" class="s">PSI drift → alert</text>
+
+  <!-- promotion, run by a person outside the DAGs -->
+  <rect x="770" y="-42" width="140" height="56" rx="6" class="box"/>
+  <text x="782" y="-20" class="t">Promote (manual)</text>
+  <text x="782" y="-3" class="s">model_promote.py,</text>
+  <text x="782" y="9" class="s">records who and why</text>
 
   <!-- registry and outputs -->
   <rect x="770" y="40" width="140" height="80" rx="6" class="dark"/>
   <text x="782" y="62" class="w">MLflow</text>
   <text x="782" y="79" class="ws">tracking + registry</text>
   <text x="782" y="94" class="ws">aliases: champion,</text>
-  <text x="782" y="108" class="ws">challenger, baseline</text>
+  <text x="782" y="108" class="ws">shadows, baseline</text>
 
   <rect x="770" y="150" width="140" height="60" rx="6" class="accent"/>
   <text x="782" y="172" class="t">Alert list</text>
@@ -116,6 +122,7 @@
   <path d="M560 224 H578" class="arrow"/>
 
   <!-- registry and outputs -->
+  <path d="M840 14 V38" class="arrow"/>
   <path d="M715 80 H768" class="arrow"/>
   <path d="M800 120 V136 H717" class="arrow"/>
   <path d="M715 165 H768" class="arrow"/>
