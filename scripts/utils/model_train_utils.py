@@ -22,7 +22,8 @@ def load_train_valid(config):
     return train_pdf, valid_pdf
 
 
-def log_model(model, feature_cols, params, trials_pdf, train_pdf, valid_pdf, config, client):
+def log_model(model, feature_cols, params, trials_pdf, train_pdf, valid_pdf, config, client, extra_texts=None):
+    # extra_texts: optional {artifact file name: text} saved with the run (e.g. the LR coefficient table)
     # evaluate on train and valid, log everything to MLflow and register a new model version
     train_results = evaluate_scores(train_pdf["label"], model.predict_proba(train_pdf[feature_cols])[:, 1])
     valid_results = evaluate_scores(valid_pdf["label"], model.predict_proba(valid_pdf[feature_cols])[:, 1])
@@ -42,6 +43,8 @@ def log_model(model, feature_cols, params, trials_pdf, train_pdf, valid_pdf, con
         mlflow.log_metrics({"valid_" + k: v for k, v in valid_results.items()})
         # all tuning tries, to show what we tested (e.g. class weights)
         mlflow.log_text(trials_pdf.to_csv(index=False), "tuning_trials.csv")
+        for name, text in (extra_texts or {}).items():
+            mlflow.log_text(text, name)
         mlflow.sklearn.log_model(model, artifact_path="model", registered_model_name=config["model_name"],
                                  input_example=valid_pdf[feature_cols].head(3),
                                  pip_requirements=["scikit-learn==1.6.1", "lightgbm==4.6.0", "numpy==1.26.4", "pandas==2.2.3"])
