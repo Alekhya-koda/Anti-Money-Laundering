@@ -170,7 +170,7 @@ scripts/
 api/app.py                      FastAPI real-time inference
 tests/                          unit tests (metrics, PSI, reason codes, model selection, promotion, API)
 reports/                        final report (PDF + editable DOCX + HTML source), slides (PPTX), figures, result tables
-AML_EDA.ipynb                   first EDA on Colab (DuckDB)
+AML_EDA.ipynb                   exploratory data analysis (pandas + plots, reads data/raw)
 Dockerfile                      Airflow 2.6.1 + Java 17 + PySpark + LightGBM (from lab 5)
 Dockerfile.api                  small python:3.9 image for the API
 docker-compose.yaml             mlflow, airflow-init / webserver / scheduler, api
