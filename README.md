@@ -240,8 +240,8 @@ In the replay only Sep 9 has labelled model scores (challenger v3: P@500 13.8% a
 | model | role | PR-AUC | P@500 | R@2000 | R@5000 |
 |---|---|---|---|---|---|
 | Rule: rank by out_cnt | - | 0.030 | 4.2% | 6.2% | 7.9% |
-| Logistic regression | baseline (v1) | 0.042 | 5.0% | 10.1% | 13.3% |
-| LightGBM | champion (v2) | 0.068 | 9.4% | 15.0% | 20.2% |
+| Logistic regression | baseline (v1) | 0.043 | 6.0% | 9.2% | 12.7% |
+| LightGBM | champion (v2) | 0.067 | 9.4% | 15.0% | 20.2% |
 | LightGBM + graph | challenger (v3, shadow) | 0.081 | 13.8% | 17.0% | 21.7% |
 
 The champion's top 500 held 47 laundering accounts (9 of the top 10). The shadow challenger with graph features
