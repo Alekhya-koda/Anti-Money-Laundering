@@ -1,39 +1,44 @@
 import os
 import re
-import numpy as np
-import pandas as pd
+from datetime import datetime, timedelta
+
 import mlflow
 import mlflow.sklearn
-
-from datetime import datetime, timedelta
+import numpy as np
+import pandas as pd
 from mlflow.tracking import MlflowClient
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.pipeline import Pipeline
 
-
-# one registered model in MLflow, the aliases tell which version does what:
-#   champion   = production model, its scores go to the investigators
-#   challenger = runs in shadow mode, scores are saved but not used
-#   shadow_1, shadow_2 = the 2 new models of a retrain, also in shadow mode; the old challenger stops.
-#                A person makes one of them champion and the other challenger (README step 7)
-#   baseline   = logistic regression, not scored every day, only compared when models are trained
-#                (model_select.py draws the models against it)
+# one registered model in MLflow, the aliases say which version does what:
+#   champion                       production, its scores go to the investigators
+#   challenger, shadow_1, shadow_2 shadow mode, scores are saved for the monitor but not used
+#   baseline                       logistic regression, only compared at training time
 MODEL_NAME = "aml-account-risk"
-MODEL_ALIASES = ["champion", "challenger", "shadow_1", "shadow_2"]   # scored by the daily batch inference (if set)
+MODEL_ALIASES = ["champion", "challenger", "shadow_1", "shadow_2"]  # scored by batch inference
 
 ID_COLUMNS = ["acct", "snapshot_date"]
-GRAPH_FEATURES = ["pagerank", "scc_size", "nbr_out_deg_sum", "nbr_out_deg_avg", "nbr_in_deg_sum", "nbr_in_deg_avg"]
+GRAPH_FEATURES = [
+    "pagerank",
+    "scc_size",
+    "nbr_out_deg_sum",
+    "nbr_out_deg_avg",
+    "nbr_in_deg_sum",
+    "nbr_in_deg_avg",
+]
 
-# the candidate models, each has its own training script (model_train_<key>.py) and Airflow task
-# complexity is used by model_select.py: the simplest model that is good enough becomes champion
+# one training script per key (model_train_<key>.py), model_select.py prefers the lower complexity
 CANDIDATE_MODELS = {
-    "logistic_regression": {"model_type": "logistic_regression", "feature_set": "base", "complexity": 0},
+    "logistic_regression": {
+        "model_type": "logistic_regression",
+        "feature_set": "base",
+        "complexity": 0,
+    },
     "lightgbm": {"model_type": "lightgbm", "feature_set": "base", "complexity": 1},
     "lightgbm_graph": {"model_type": "lightgbm", "feature_set": "base_graph", "complexity": 2},
 }
 
-# human readable reason for each feature, shown to the investigators next to the score
-# (written neutral: a low value can also push the score up)
+# reason text shown to the investigators, worded neutrally: a low value can also raise the score
 REASON_TEXT = {
     "out_cnt": "sent {:.0f} payments in the last 4 days",
     "out_amt_pct_avg": "average sent amount is at percentile {:.2f} of its currency",
@@ -68,15 +73,25 @@ REASON_TEXT = {
 }
 
 
+def model_label(model_type, feature_set):
+    if model_type == "logistic_regression":
+        return "Logistic regression"
+    return "LightGBM + graph" if feature_set == "base_graph" else "LightGBM"
+
+
 # ----------------------------------------------------------------- feature / label store
+
 
 def load_features(snapshot_date_str, datamart_directory="datamart/"):
     # feature store + graph features of one snapshot, joined on acct
-    date_part = snapshot_date_str.replace('-','_')
-    feature_path = datamart_directory + "gold/feature_store/gold_feature_store_" + date_part + ".parquet"
-    graph_path = datamart_directory + "gold/graph_feature_store/gold_graph_features_" + date_part + ".parquet"
+    date_part = snapshot_date_str.replace("-", "_")
+    gold_directory = datamart_directory + "gold/"
+    feature_path = gold_directory + "feature_store/gold_feature_store_" + date_part + ".parquet"
+    graph_path = (
+        gold_directory + "graph_feature_store/gold_graph_features_" + date_part + ".parquet"
+    )
     if not os.path.exists(feature_path) or not os.path.exists(graph_path):
-        print('features not found:', feature_path)
+        print("features not found:", feature_path)
         return None
 
     features_pdf = pd.read_parquet(feature_path)
@@ -87,15 +102,16 @@ def load_features(snapshot_date_str, datamart_directory="datamart/"):
 
 
 def load_labels(snapshot_date_str, datamart_directory="datamart/"):
-    label_path = datamart_directory + "gold/label_store/gold_label_store_" + snapshot_date_str.replace('-','_') + ".parquet"
+    date_part = snapshot_date_str.replace("-", "_")
+    label_path = datamart_directory + "gold/label_store/gold_label_store_" + date_part + ".parquet"
     if not os.path.exists(label_path):
-        print('labels not found:', label_path)
+        print("labels not found:", label_path)
         return None
     return pd.read_parquet(label_path, columns=["acct", "label"])
 
 
 def load_training_data(snapshot_date_str, datamart_directory="datamart/"):
-    # features LEFT JOIN labels, accounts that did not send anything in the label window get label 0
+    # features LEFT JOIN labels: accounts that sent nothing in the label window get label 0
     features_pdf = load_features(snapshot_date_str, datamart_directory)
     labels_pdf = load_labels(snapshot_date_str, datamart_directory)
     if features_pdf is None or labels_pdf is None:
@@ -106,15 +122,15 @@ def load_training_data(snapshot_date_str, datamart_directory="datamart/"):
 
 
 def train_valid_snapshots(model_train_date_str):
-    '''
-    labels are 2 days late, so on the train date the newest labelled snapshot is 2 days ago (valid)
-    the train snapshot is 2 days before that, so the label windows of train and valid do not overlap
+    """
+    labels are 2 days late, so on the train date the newest labelled snapshot (valid) is 2 days old
+    the train snapshot is 2 days before that, so the train and valid label windows do not overlap
 
       snapshot     features from     labels from
       09-05 train  09-01 .. 09-04    09-05 .. 09-06
       09-07 valid  09-03 .. 09-06    09-07 .. 09-08
       09-09 test   09-05 .. 09-08    09-09 .. 09-10   <- model trained on 09-09 scores this one
-    '''
+    """
     model_train_date = datetime.strptime(model_train_date_str, "%Y-%m-%d")
     train_snapshot_date_str = (model_train_date - timedelta(days=4)).strftime("%Y-%m-%d")
     valid_snapshot_date_str = (model_train_date - timedelta(days=2)).strftime("%Y-%m-%d")
@@ -130,9 +146,9 @@ def feature_columns(pdf, with_graph=True):
 
 # ----------------------------------------------------------------- metrics
 
+
 def precision_recall_at_k(y_true, scores, k, seed=88):
-    # shuffle first so accounts with the same score are ranked randomly, not by row order
-    # (sorting on a score with many ties and taking the top k can leak the row order)
+    # shuffle first so ties are ranked randomly, sorting alone would rank them by row order
     pdf = pd.DataFrame({"y": np.asarray(y_true), "score": np.asarray(scores)})
     pdf = pdf.sample(frac=1, random_state=seed)
     top = pdf.sort_values("score", ascending=False, kind="mergesort").head(k)
@@ -151,18 +167,6 @@ def evaluate_scores(y_true, scores, ks=(500, 2000, 5000)):
     return results
 
 
-def bootstrap_ci(y_true, scores, metric, n_boot=200, seed=88):
-    # 95% interval of a metric by resampling accounts, used to see if two models really differ
-    y_true = np.asarray(y_true)
-    scores = np.asarray(scores)
-    rng = np.random.default_rng(seed)
-    values = []
-    for _ in range(n_boot):
-        idx = rng.integers(0, len(y_true), len(y_true))
-        values.append(metric(y_true[idx], scores[idx]))
-    return np.percentile(values, 2.5), np.percentile(values, 97.5)
-
-
 def psi(expected, actual, bins=10):
     # population stability index, bins come from the reference data
     # < 0.1 stable, 0.1 - 0.25 some change, > 0.25 big change
@@ -179,15 +183,15 @@ def psi(expected, actual, bins=10):
 
 # ----------------------------------------------------------------- explanations
 
+
 def explain(model, X):
-    # contribution of each feature to the score (log odds), the same idea as SHAP values
-    # lightgbm gives exact tree SHAP values with pred_contrib, for the logistic regression
-    # the contribution is coefficient x scaled feature value
+    # contribution of each feature to the log odds: tree SHAP values for LightGBM,
+    # coefficient x scaled feature value for the logistic regression
     if isinstance(model, Pipeline):
         z = model[:-1].transform(X)
         contrib = z * model[-1].coef_[0]
     else:
-        contrib = model.predict(X, pred_contrib=True)[:, :-1]   # last column is the bias
+        contrib = model.predict(X, pred_contrib=True)[:, :-1]  # last column is the bias
     return pd.DataFrame(contrib, columns=X.columns, index=X.index)
 
 
@@ -199,14 +203,17 @@ def reason_codes(model, X, top_n=3):
         top = row[row > 0].sort_values(ascending=False).head(top_n)
         texts = [REASON_TEXT.get(f, f + " = {:.2f}").format(X.at[idx, f]) for f in top.index]
         # "1 hours" -> "1 hour"
-        reasons.append([re.sub(r"\b1 (hour|payment|account|bank|day)s\b", r"1 \1", t) for t in texts])
+        reasons.append(
+            [re.sub(r"\b1 (hour|payment|account|bank|day)s\b", r"1 \1", t) for t in texts]
+        )
     return reasons
 
 
 # ----------------------------------------------------------------- model registry
 
+
 def load_registered_model(alias, model_name=MODEL_NAME):
-    # returns (model, model_version) or (None, None) if the alias is not set yet
+    # returns (model, model_version), or (None, None) if the alias is not set yet
     client = MlflowClient()
     try:
         mv = client.get_model_version_by_alias(model_name, alias)
