@@ -11,7 +11,5 @@ __pycache__/
 .DS_Store
 pics/
 # large report files (final report, slides, PDFs); figures/ and tables/ stay tracked
-reports/*.pdf
-reports/*.docx
-reports/*.pptx
-reports/*.html
+reports
+anaconda_projects/
